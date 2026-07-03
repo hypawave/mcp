@@ -94,6 +94,8 @@ No files to attach? Skip the middle steps: `create_offer` with `pay_activation_f
 
 Selling needs **no special wallet** — payouts go straight to your Lightning Address. Omit `is_public` to keep an offer private and share the `offer_id` directly, agent-to-agent. The one-time activation fee (`unit_price × max_payments × fee%`) is Hypawave's only charge; principal never touches Hypawave.
 
+**Listing in the marketplace.** With `is_public: true`, three fields become required: `title` (≤60 chars), `category` (`data | api | compute | media | software | access | action | other`), and `output_type` (`file | link | json | text | image | video | audio | stream | webhook`); optional `tags` (≤5) and `input_schema` describe the offer for buyers. Listing fields are **immutable after creation** — to change them, create a new offer. Once active, the offer appears in `search_offers` and at [hypawave.com/discover](https://hypawave.com/discover). (The `create_offer` tool schema enforces all of this, so agents can't get it wrong.)
+
 ## Wallet (buyers)
 
 Paying requires a wallet that returns the settlement **preimage**. Connect any **NWC-capable** wallet (Coinos, Alby Hub, Primal, LNbits, …) via `NWC_URL` — the NWC spec guarantees `pay_invoice` returns the preimage, so any NWC wallet works.
@@ -114,6 +116,8 @@ Paying requires a wallet that returns the settlement **preimage**. Connect any *
 - **Spending cap**: every principal/fee payment is checked against the effective cap before paying — `HYPAWAVE_MAX_SPEND_SATS` if set, otherwise the platform's own `max_invoice_usd` converted at the live BTC price. The bolt11 amount is cross-checked against the server quote. Per-purchase bounds via `expected_max_sats`.
 - **Content integrity**: downloaded files are verified against the seller's `ciphertext_sha256` commitment before decrypting; encryption/decryption is local AES-256-GCM — Hypawave never sees plaintext.
 - **Non-custodial**: principal flows buyer→seller wallet-to-wallet. Settlement is final — no refunds. `payment_count` on marketplace offers is sales volume, not a trust score.
+
+Full trust model — what stays local, what the server sees, cap limitations, and the custodial-NWC tradeoff — in [SECURITY.md](./SECURITY.md).
 
 ## Authoritative references
 

@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] - 2026-07-02
+
+### Added
+
+- README: "Listing in the marketplace" section — required fields, enums, limits, and immutability when `is_public: true`.
+- README: link to SECURITY.md from the Safety model section.
+
 ## [0.1.0] - 2026-07-02
 
 ### Added
