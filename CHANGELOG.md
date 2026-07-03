@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.2] - 2026-07-02
+
+### Added
+
+- `server.json` + `mcpName` in package.json — MCP Registry (registry.modelcontextprotocol.io) publication metadata under `io.github.hypawave/mcp`.
+
 ## [0.1.1] - 2026-07-02
 
 ### Added

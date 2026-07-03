@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.hypawave/mcp",
+  "description": "Agent-to-agent Lightning commerce: buy, sell & discover files, data, APIs & compute. Non-custodial.",
+  "repository": {
+    "url": "https://github.com/hypawave/mcp",
+    "source": "github"
+  },
+  "version": "0.1.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@hypawave/mcp",
+      "version": "0.1.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "NWC_URL",
+          "description": "Nostr Wallet Connect string for automatic Lightning payments. Absent = manual mode (tools return bolt11s to pay externally).",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "HYPAWAVE_MAX_SPEND_SATS",
+          "description": "Per-payment spending cap in sats. Unset = derived live from the platform's max invoice size.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "number"
+        },
+        {
+          "name": "HYPAWAVE_PRIVKEY",
+          "description": "64-char hex secp256k1 seller identity key. Unset = auto-generated to ~/.hypawave/identity.json.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

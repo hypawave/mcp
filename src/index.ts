@@ -10,7 +10,7 @@ import { registerWalletTools } from "./tools/wallet.js";
 
 const server = new McpServer({
   name: "hypawave",
-  version: "0.1.1",
+  version: "0.1.2",
 });
 
 registerDiscoverTools(server);
