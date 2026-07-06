@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { hw } from "../api.js";
-import { getPubKey } from "../config.js";
+import { getNwcSource, getPubKey } from "../config.js";
 import { getBalanceSats, nwcConfigured } from "../nwc.js";
 import { getSpendCapSats, jsonResult } from "../util.js";
 
@@ -39,9 +39,12 @@ export function registerWalletTools(server: McpServer) {
       return jsonResult({
         wallet: {
           nwc_configured: nwcConfigured(),
+          source: getNwcSource(),
           balance_sats,
           ...(wallet_error ? { error: wallet_error } : {}),
-          mode: nwcConfigured() ? "automatic payments" : "manual mode — tools return bolt11s to pay externally",
+          mode: nwcConfigured()
+            ? "automatic payments"
+            : "manual mode — tools return bolt11s to pay externally; call setup_wallet to configure a wallet",
         },
         spending_cap: await getSpendCapSats().catch((e) => ({ error: String(e) })),
         seller_pubkey,

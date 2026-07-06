@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-07-06
+
+### Added
+
+- `setup_wallet` tool (16 tools total): agent-driven wallet provisioning. `create_hosted` registers a fresh Coinos account (registration auto-creates the NWC connection; requires explicit operator consent via `confirm: true`) and saves credentials to `~/.hypawave/wallet.json` (0600, local-only — Hypawave servers never receive them). `connect_own` saves an existing NWC string instead and live-verifies it with a balance probe. Called with no arguments, it returns operator-facing options to present verbatim.
+- `getNwcUrl()` now falls back to `~/.hypawave/wallet.json` when `NWC_URL` / `HYPAWAVE_NWC_URL` are unset (env always wins). `wallet_status` and the startup log report the config source; manual-mode messages point to `setup_wallet`.
+- `COINOS_API_URL` env var (default `https://coinos.io/api`).
+
+### Security
+
+- Wallet file is written 0600 and never overwritten while it exists (it may hold a funded wallet's only credentials); corrupt files degrade to manual mode instead of throwing.
+
 ## [0.1.2] - 2026-07-02
 
 ### Added

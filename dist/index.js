@@ -18,8 +18,36 @@ var API_BASE = process.env.HYPAWAVE_API_URL || "https://hypawave.com";
 var FALLBACK_SPEND_CAP_SATS = 5e4;
 var KEY_DIR = join(homedir(), ".hypawave");
 var KEY_FILE = join(KEY_DIR, "identity.json");
+var WALLET_FILE = join(KEY_DIR, "wallet.json");
 function getNwcUrl() {
-  return process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL || void 0;
+  return process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL || readWalletFile()?.nwc_url;
+}
+function getNwcSource() {
+  if (process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL) return "env";
+  if (readWalletFile()) return "wallet_file";
+  return null;
+}
+function readWalletFile() {
+  try {
+    if (!existsSync(WALLET_FILE)) return void 0;
+    const parsed = JSON.parse(readFileSync(WALLET_FILE, "utf8"));
+    if (typeof parsed?.nwc_url === "string" && parsed.nwc_url.startsWith("nostr+walletconnect://")) {
+      return parsed;
+    }
+  } catch {
+  }
+  return void 0;
+}
+function saveWalletFile(wallet) {
+  mkdirSync(KEY_DIR, { recursive: true, mode: 448 });
+  writeFileSync(WALLET_FILE, JSON.stringify(wallet, null, 2), { mode: 384 });
+  return WALLET_FILE;
+}
+function walletFileExists() {
+  return existsSync(WALLET_FILE);
+}
+function walletFilePath() {
+  return WALLET_FILE;
 }
 function getMaxSpendSatsEnv() {
   const raw = process.env.HYPAWAVE_MAX_SPEND_SATS;
@@ -807,8 +835,161 @@ function registerSellTools(server2) {
   );
 }
 
-// src/tools/status.ts
+// src/tools/setup-wallet.ts
 import { z as z5 } from "zod";
+
+// src/coinos.ts
+import { randomBytes as randomBytes4 } from "crypto";
+var COINOS_API = process.env.COINOS_API_URL || "https://coinos.io/api";
+async function coinos(path, opts = {}) {
+  const res = await fetch(`${COINOS_API}${path}`, {
+    method: opts.body ? "POST" : "GET",
+    headers: {
+      "content-type": "application/json",
+      ...opts.token ? { authorization: `Bearer ${opts.token}` } : {}
+    },
+    body: opts.body ? JSON.stringify(opts.body) : void 0
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`coinos ${path}: HTTP ${res.status}${text ? ` \u2014 ${text.slice(0, 200)}` : ""}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`coinos ${path}: non-JSON response`);
+  }
+}
+async function createCoinosWallet() {
+  const username = `hw${randomBytes4(6).toString("hex")}`;
+  const password = randomBytes4(24).toString("base64url");
+  const { token } = await coinos("/register", {
+    body: { user: { username, password } }
+  });
+  if (!token) throw new Error("coinos /register returned no auth token");
+  const apps = await coinos("/apps", { token });
+  const nwc = apps?.find((a) => typeof a?.nwc === "string")?.nwc;
+  if (!nwc || !nwc.startsWith("nostr+walletconnect://")) {
+    throw new Error("coinos returned no NWC connection for the new account");
+  }
+  return {
+    provider: "coinos",
+    username,
+    password,
+    nwc_url: nwc,
+    lightning_address: `${username}@${new URL(COINOS_API).host}`,
+    created_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+
+// src/tools/setup-wallet.ts
+var OPERATOR_OPTIONS = [
+  "To buy things automatically, your agent needs a Lightning wallet it can spend from. Three options:",
+  "1. CREATE ONE NOW (recommended for getting started) \u2014 creates a hosted wallet at coinos.io (think prepaid card: funds are held by that service, so keep only small amounts, e.g. $10\u201320 worth of sats; the operator spending cap applies to every payment). Credentials are generated and stored only on this machine \u2014 Hypawave's servers never receive them.",
+  "2. CONNECT YOUR OWN WALLET \u2014 if you already use an NWC-capable wallet (Alby Hub, Primal, LNbits, your own node), provide its NWC connection string; no account is created anywhere. Note: self-hosted nodes need channel liquidity even for tiny payments.",
+  "3. SKIP \u2014 purchases will return a Lightning invoice to pay manually from any wallet (you'll also need the preimage from your wallet to confirm \u2014 fine for testing, clunky as a routine)."
+].join("\n");
+var NWC_URI_RE = /^nostr\+walletconnect:\/\/[0-9a-f]{64}\?/i;
+async function tryBalance() {
+  try {
+    const balance_sats = await Promise.race([
+      getBalanceSats(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timed out after 15s")), 15e3))
+    ]);
+    return { balance_sats };
+  } catch (e) {
+    return { balance_sats: null, wallet_error: e instanceof Error ? e.message : String(e) };
+  }
+}
+function registerSetupWalletTools(server2) {
+  server2.registerTool(
+    "setup_wallet",
+    {
+      title: "Set up the agent's Lightning wallet",
+      description: "One-time wallet setup so purchases can pay automatically. Call with no arguments first: it returns the operator-facing options \u2014 present them to the operator verbatim and let them choose; do not choose for them. Then call {action:'create_hosted', confirm:true} ONLY after the operator explicitly agreed (creates a hosted custodial wallet at coinos.io; credentials are stored locally in ~/.hypawave/wallet.json and never sent to Hypawave), or {action:'connect_own', nwc_url:'nostr+walletconnect://\u2026'} to use an existing NWC wallet. The NWC_URL env var, when set, always takes precedence over anything configured here.",
+      inputSchema: {
+        action: z5.enum(["create_hosted", "connect_own"]).optional().describe("Omit to get the options to present to the operator"),
+        confirm: z5.boolean().optional().describe("Required true for create_hosted \u2014 set only after the operator explicitly agreed"),
+        nwc_url: z5.string().optional().describe("For connect_own: the wallet's NWC connection string")
+      }
+    },
+    async ({ action, confirm, nwc_url }) => {
+      const envSet = Boolean(process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL);
+      if (!action) {
+        const configured = Boolean(getNwcUrl());
+        return jsonResult({
+          configured,
+          source: getNwcSource(),
+          ...configured ? { message: "A wallet is already configured \u2014 no setup needed. Call wallet_status for the balance." } : { present_to_operator: OPERATOR_OPTIONS }
+        });
+      }
+      if (envSet) {
+        return jsonResult({
+          ok: false,
+          message: "NWC_URL is set in the environment and always takes precedence \u2014 unset it in the MCP config first if you want a different wallet."
+        });
+      }
+      if (action === "connect_own") {
+        if (!nwc_url || !NWC_URI_RE.test(nwc_url) || !/[?&]secret=[0-9a-f]{64}/i.test(nwc_url)) {
+          throw new Error(
+            "connect_own requires a valid NWC connection string: nostr+walletconnect://<64-hex-pubkey>?relay=\u2026&secret=<64-hex>"
+          );
+        }
+        if (walletFileExists()) {
+          throw new Error(
+            `${walletFilePath()} already exists and may hold a funded wallet's only credentials \u2014 back it up and remove it manually first.`
+          );
+        }
+        const path2 = saveWalletFile({
+          provider: "custom",
+          nwc_url,
+          created_at: (/* @__PURE__ */ new Date()).toISOString()
+        });
+        const check = await tryBalance();
+        return jsonResult({
+          ok: true,
+          provider: "custom",
+          saved_to: path2,
+          connection_verified: check.balance_sats !== null,
+          ...check,
+          next: check.balance_sats !== null ? "Wallet connected \u2014 purchases now pay automatically under the spending cap." : "Saved, but the connection could not be verified yet \u2014 check the NWC string and wallet, then call wallet_status."
+        });
+      }
+      if (walletFileExists()) {
+        const existing = readWalletFile();
+        return jsonResult({
+          ok: true,
+          already_exists: true,
+          provider: existing?.provider ?? "unknown",
+          lightning_address: existing?.lightning_address ?? null,
+          credentials_file: walletFilePath(),
+          message: "A wallet file already exists \u2014 reusing it. Fund it or remove the file manually to start over."
+        });
+      }
+      if (!confirm) {
+        return jsonResult({
+          ok: false,
+          needs_confirmation: true,
+          present_to_operator: OPERATOR_OPTIONS,
+          message: "create_hosted opens a custodial account at coinos.io in the operator's name. Present the options above, and retry with confirm:true only after the operator explicitly chose option 1."
+        });
+      }
+      const wallet = await createCoinosWallet();
+      const path = saveWalletFile(wallet);
+      return jsonResult({
+        ok: true,
+        provider: "coinos",
+        lightning_address: wallet.lightning_address,
+        credentials_file: path,
+        next: `Fund it by sending sats to ${wallet.lightning_address} (start small \u2014 5,000\u201350,000 sats). Then wallet_status shows the balance and purchases pay automatically under the spending cap.`,
+        important: `Custodial wallet \u2014 coinos.io holds the funds; keep only small amounts. ${path} contains the ONLY copy of the credentials: back it up, and never delete it while the wallet holds funds.`
+      });
+    }
+  );
+}
+
+// src/tools/status.ts
+import { z as z6 } from "zod";
 function registerStatusTools(server2) {
   server2.registerTool(
     "my_offers",
@@ -816,7 +997,7 @@ function registerStatusTools(server2) {
       title: "List your own offers (seller)",
       description: "List all offers created by this server's seller identity (pubkey-signed). Shows each offer's status, capacity usage, and activation window \u2014 use manage_offer for details/renewal.",
       inputSchema: {
-        status: z5.string().optional().describe("Filter by offer status")
+        status: z6.string().optional().describe("Filter by offer status")
       }
     },
     async ({ status }) => jsonResult(await hw("/api/offers/list", { method: "GET", signed: true, query: { status } }))
@@ -827,11 +1008,11 @@ function registerStatusTools(server2) {
       title: "List your sales (seller reconciliation)",
       description: "List settled/pending sales for this seller identity (pubkey-signed). kind=offers \u2192 Path 3b payment intents (via /api/offers/list-payments, filterable by offer_id); kind=invoices \u2192 Path 3a invoices (via /api/offers/list-invoices). Returns payment_hash/preimage per sale \u2014 the authoritative way to reconcile missed execution_webhook deliveries.",
       inputSchema: {
-        kind: z5.enum(["offers", "invoices"]),
-        offer_id: z5.string().uuid().optional().describe("Filter to one offer (kind=offers only)"),
-        status: z5.string().optional(),
-        limit: z5.number().int().min(1).max(100).optional(),
-        offset: z5.number().int().min(0).optional()
+        kind: z6.enum(["offers", "invoices"]),
+        offer_id: z6.string().uuid().optional().describe("Filter to one offer (kind=offers only)"),
+        status: z6.string().optional(),
+        limit: z6.number().int().min(1).max(100).optional(),
+        offset: z6.number().int().min(0).optional()
       }
     },
     async ({ kind, offer_id, status, limit, offset }) => {
@@ -851,10 +1032,10 @@ function registerStatusTools(server2) {
       title: "Fetch a settlement receipt for a past purchase",
       description: "Retrieve the durable settlement record for a purchase you made. For an offer purchase (Path 3b) pass payment_intent_id + payer_secret (both returned by buy_offer). For an invoice (Path 2/3a) pass invoice_id + preimage (pay_invoice returned the preimage).",
       inputSchema: {
-        payment_intent_id: z5.string().uuid().optional(),
-        payer_secret: z5.string().optional().describe("Required with payment_intent_id"),
-        invoice_id: z5.string().optional(),
-        preimage: z5.string().regex(/^[0-9a-fA-F]{64}$/).optional().describe("Required with invoice_id")
+        payment_intent_id: z6.string().uuid().optional(),
+        payer_secret: z6.string().optional().describe("Required with payment_intent_id"),
+        invoice_id: z6.string().optional(),
+        preimage: z6.string().regex(/^[0-9a-fA-F]{64}$/).optional().describe("Required with invoice_id")
       }
     },
     async ({ payment_intent_id, payer_secret, invoice_id, preimage }) => {
@@ -879,9 +1060,9 @@ function registerStatusTools(server2) {
       title: "Check settlement/unlock status of a purchase",
       description: "Non-destructive status check. For an offer purchase (Path 3b) pass payment_intent_id + payer_secret \u2014 returns status and the claim_token once settled. For invoices (Path 2/3a) pass invoice_ids \u2014 returns unlock status per invoice.",
       inputSchema: {
-        payment_intent_id: z5.string().uuid().optional(),
-        payer_secret: z5.string().optional().describe("Required with payment_intent_id"),
-        invoice_ids: z5.array(z5.string()).optional().describe("Invoice ids to check (Path 2/3a)")
+        payment_intent_id: z6.string().uuid().optional(),
+        payer_secret: z6.string().optional().describe("Required with payment_intent_id"),
+        invoice_ids: z6.array(z6.string()).optional().describe("Invoice ids to check (Path 2/3a)")
       }
     },
     async ({ payment_intent_id, payer_secret, invoice_ids }) => {
@@ -929,9 +1110,10 @@ function registerWalletTools(server2) {
       return jsonResult({
         wallet: {
           nwc_configured: nwcConfigured(),
+          source: getNwcSource(),
           balance_sats,
           ...wallet_error ? { error: wallet_error } : {},
-          mode: nwcConfigured() ? "automatic payments" : "manual mode \u2014 tools return bolt11s to pay externally"
+          mode: nwcConfigured() ? "automatic payments" : "manual mode \u2014 tools return bolt11s to pay externally; call setup_wallet to configure a wallet"
         },
         spending_cap: await getSpendCapSats().catch((e) => ({ error: String(e) })),
         seller_pubkey,
@@ -945,7 +1127,7 @@ function registerWalletTools(server2) {
 // src/index.ts
 var server = new McpServer({
   name: "hypawave",
-  version: "0.1.0"
+  version: "0.2.0"
 });
 registerDiscoverTools(server);
 registerBuyTools(server);
@@ -953,6 +1135,10 @@ registerInvoiceBuyTools(server);
 registerSellTools(server);
 registerStatusTools(server);
 registerWalletTools(server);
+registerSetupWalletTools(server);
 var transport = new StdioServerTransport();
 await server.connect(transport);
-console.error("hypawave-mcp ready (15 tools; NWC " + (process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL ? "configured" : "not configured \u2014 manual mode") + ")");
+var nwcSource = getNwcSource();
+console.error(
+  "hypawave-mcp ready (16 tools; NWC " + (nwcSource ? `configured via ${nwcSource}` : "not configured \u2014 manual mode; setup_wallet available") + ")"
+);

@@ -45,7 +45,7 @@ env = { NWC_URL = "nostr+walletconnect://...", HYPAWAVE_MAX_SPEND_SATS = "10000"
 
 All env vars are optional — with no `NWC_URL` the server runs in manual mode (see Wallet below).
 
-## Tools (15)
+## Tools (16)
 
 | Tool | What it does |
 |---|---|
@@ -67,6 +67,7 @@ All env vars are optional — with no `NWC_URL` the server runs in manual mode (
 | `list_sales` | List your settled sales (payments/invoices) — reconcile missed webhooks |
 | **Utility** | |
 | `wallet_status` | Wallet balance, seller pubkey, spending cap, live platform fees/limits |
+| `setup_wallet` | One-time wallet setup: create a hosted Coinos wallet (with operator consent) or connect your own NWC string |
 
 ## Buy in three calls
 
@@ -100,13 +101,16 @@ Selling needs **no special wallet** — payouts go straight to your Lightning Ad
 
 Paying requires a wallet that returns the settlement **preimage**. Connect any **NWC-capable** wallet (Coinos, Alby Hub, Primal, LNbits, …) via `NWC_URL` — the NWC spec guarantees `pay_invoice` returns the preimage, so any NWC wallet works.
 
+**No wallet yet? `setup_wallet`.** With explicit operator consent it registers a fresh hosted wallet at coinos.io (custodial — keep only small amounts) and saves the credentials to `~/.hypawave/wallet.json` (0600, local only; Hypawave's servers never receive them — **back this file up: it holds the only copy**). Fund it by sending sats to the returned Lightning address. Or pass your own NWC string via `{action:"connect_own"}`. `NWC_URL`, when set, always wins over the wallet file.
+
 **No wallet configured? Manual mode.** `buy_offer` / `pay_invoice` return the bolt11; pay it with any preimage-returning wallet and submit the preimage via `confirm_payment` (or re-call `pay_invoice` with it).
 
 ## Environment variables
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `NWC_URL` | no | Nostr Wallet Connect string for automatic payments. Absent → manual mode. |
+| `NWC_URL` | no | Nostr Wallet Connect string for automatic payments. Absent → falls back to `~/.hypawave/wallet.json` (from `setup_wallet`), else manual mode. |
+| `COINOS_API_URL` | no | Coinos API base for `setup_wallet` (default `https://coinos.io/api`). |
 | `HYPAWAVE_MAX_SPEND_SATS` | no | Per-payment cap enforced in code. Unset → derived live from the platform's `max_invoice_usd` at the current BTC price (so the default never blocks a platform-allowed amount). Payments above it are refused. |
 | `HYPAWAVE_PRIVKEY` | no | 64-char hex secp256k1 key = your seller identity. Auto-generated to `~/.hypawave/identity.json` (0600) if unset. **Back it up — it controls your offers.** |
 | `HYPAWAVE_API_URL` | no | API base (default `https://hypawave.com`). |

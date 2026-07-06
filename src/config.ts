@@ -12,9 +12,59 @@ export const FALLBACK_SPEND_CAP_SATS = 50_000;
 
 const KEY_DIR = join(homedir(), ".hypawave");
 const KEY_FILE = join(KEY_DIR, "identity.json");
+const WALLET_FILE = join(KEY_DIR, "wallet.json");
 
+export interface WalletFile {
+  provider: "coinos" | "custom";
+  nwc_url: string;
+  username?: string;
+  password?: string;
+  lightning_address?: string;
+  created_at?: string;
+}
+
+/** Env always wins over the locally provisioned wallet file. */
 export function getNwcUrl(): string | undefined {
-  return process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL || undefined;
+  return process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL || readWalletFile()?.nwc_url;
+}
+
+export function getNwcSource(): "env" | "wallet_file" | null {
+  if (process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL) return "env";
+  if (readWalletFile()) return "wallet_file";
+  return null;
+}
+
+/**
+ * A corrupt/unreadable wallet file yields undefined (manual mode) rather than
+ * throwing — but the file is never overwritten while it exists (see
+ * walletFileExists guard in setup_wallet), since it may hold the only copy of
+ * a funded wallet's credentials.
+ */
+export function readWalletFile(): WalletFile | undefined {
+  try {
+    if (!existsSync(WALLET_FILE)) return undefined;
+    const parsed = JSON.parse(readFileSync(WALLET_FILE, "utf8"));
+    if (typeof parsed?.nwc_url === "string" && parsed.nwc_url.startsWith("nostr+walletconnect://")) {
+      return parsed as WalletFile;
+    }
+  } catch {
+    /* fall through */
+  }
+  return undefined;
+}
+
+export function saveWalletFile(wallet: WalletFile): string {
+  mkdirSync(KEY_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(WALLET_FILE, JSON.stringify(wallet, null, 2), { mode: 0o600 });
+  return WALLET_FILE;
+}
+
+export function walletFileExists(): boolean {
+  return existsSync(WALLET_FILE);
+}
+
+export function walletFilePath(): string {
+  return WALLET_FILE;
 }
 
 /** Operator-set per-payment cap, or null when unset (a platform-derived default applies — see getSpendCapSats). */

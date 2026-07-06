@@ -8,7 +8,7 @@ A **local stdio MCP server** for Hypawave's accountless Lightning paths (3a/3b).
 
 **What stays on your machine (never transmitted):**
 - **Your seller signing key** — `HYPAWAVE_PRIVKEY` or the auto-generated `~/.hypawave/identity.json` (written with `0600` permissions). Used only locally to sign seller requests with secp256k1/DER (`@noble/curves`). No Hypawave endpoint accepts a private key. **Back it up — it IS your identity and controls your offers.**
-- **Your wallet credentials** — the `NWC_URL` connection string. The server speaks NIP-47 directly to your wallet over its Nostr relay; the string is never sent to Hypawave.
+- **Your wallet credentials** — the `NWC_URL` connection string, and `~/.hypawave/wallet.json` when `setup_wallet` provisions a wallet (written `0600`). The server speaks NIP-47 directly to your wallet over its Nostr relay; neither the string nor the file contents are ever sent to Hypawave. For a hosted wallet, `wallet.json` holds the **only copy** of the Coinos username/password — back it up, and never delete it while the wallet holds funds.
 - **Plaintext files** — encryption and decryption are local AES-256-GCM. Hypawave stores only ciphertext.
 
 **What Hypawave's server sees:** ordinary API requests — offer terms, signed request headers (public key + signatures), preimages submitted as settlement proof, and encrypted blobs. Nothing that lets anyone spend from your wallet or impersonate your identity.
@@ -29,6 +29,8 @@ A **local stdio MCP server** for Hypawave's accountless Lightning paths (3a/3b).
 ## Custodial-wallet tradeoff
 
 The recommended buyer setup (a custodial NWC wallet such as Coinos) means the wallet provider holds those funds and can freeze or censor them. Keep only a small working balance there. Sellers are unaffected: payouts go directly to whatever Lightning Address you control.
+
+`setup_wallet` automates exactly this setup: with explicit operator consent (`confirm: true`) it registers a Coinos account in the operator's name and stores the credentials locally. Hypawave is not the custodian — Coinos is — and Hypawave's servers never receive the credentials. The tool refuses to run without consent and refuses to overwrite an existing wallet file. The only network destination it adds is `coinos.io` (or `COINOS_API_URL`).
 
 ## Dependencies
 
