@@ -3,6 +3,14 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-07-22
+
+### Added
+
+- **Operator funding options** — `setup_wallet {action:"funding_options", amount_sats?}` returns operator-facing funding instructions to present verbatim: an exact-amount Lightning invoice (payable from Cash App, Coinbase, or any Lightning wallet) or the wallet's Lightning address, plus an on-chain deposit address for exchanges without Lightning (e.g. Robinhood; 300-sat Coinos dust minimum surfaced). Hosted-wallet creation now returns the same funding block, and insufficient-balance NWC payment errors point the agent at the action.
+- **Per-wallet NWC guidance** — `setup_wallet {action:"connect_own"}` without `nwc_url` now returns wallet-specific steps (Alby Hub, Coinos, Primal, LNbits, self-hosted node) for finding the connection string, instead of erroring; operator option 2 tells the agent to ask which wallet the operator uses.
+- Coinos registration JWT (no expiry) is persisted in `~/.hypawave/wallet.json` (`token`) to mint funding invoices and on-chain addresses later; new `createFundingInvoice()` / `getOnchainAddress()` client helpers (`POST /invoice`, types `lightning` / `bitcoin`).
+
 ## [0.2.0] - 2026-07-06
 
 ### Added

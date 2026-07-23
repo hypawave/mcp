@@ -364,7 +364,18 @@ async function getClient() {
 }
 async function payBolt11(bolt11) {
   const client = await getClient();
-  const result = await client.payInvoice({ invoice: bolt11 });
+  let result;
+  try {
+    result = await client.payInvoice({ invoice: bolt11 });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/insufficient|balance|not enough|exceeds.*budget|quota/i.test(msg)) {
+      throw new Error(
+        `${msg} \u2014 the agent wallet balance is too low. Call setup_wallet {action:"funding_options", amount_sats:<needed>} and present the funding options to your operator.`
+      );
+    }
+    throw e;
+  }
   if (!result?.preimage || !/^[0-9a-fA-F]{64}$/.test(result.preimage)) {
     throw new Error(
       "wallet paid (or attempted) but returned no valid preimage \u2014 cannot prove settlement; check the payment in your wallet before retrying"
@@ -876,18 +887,92 @@ async function createCoinosWallet() {
     provider: "coinos",
     username,
     password,
+    token,
     nwc_url: nwc,
     lightning_address: `${username}@${new URL(COINOS_API).host}`,
     created_at: (/* @__PURE__ */ new Date()).toISOString()
   };
+}
+async function createFundingInvoice(token, amountSats) {
+  const inv = await coinos("/invoice", {
+    token,
+    body: { invoice: { type: "lightning", amount: Math.floor(amountSats) } }
+  });
+  if (!inv?.hash || !inv.hash.toLowerCase().startsWith("ln")) {
+    throw new Error("coinos returned no bolt11 for the funding invoice");
+  }
+  return inv.hash;
+}
+async function getOnchainAddress(token) {
+  const inv = await coinos("/invoice", {
+    token,
+    body: { invoice: { type: "bitcoin", amount: 0 } }
+  });
+  if (!inv?.hash || !/^(bc1|[13])[a-zA-Z0-9]{20,}$/.test(inv.hash)) {
+    throw new Error("coinos returned no on-chain deposit address");
+  }
+  return inv.hash;
+}
+async function getFundingOptions(amountSats) {
+  const wallet = readWalletFile();
+  if (!wallet || wallet.provider !== "coinos" || !wallet.token) {
+    return {
+      present_to_operator: [
+        "Fund the agent's Lightning wallet using its own receive/deposit flow (open the wallet app and create a receive invoice or address).",
+        "Instant options once you have an invoice: pay it from Cash App, Coinbase, or any Lightning wallet.",
+        wallet?.lightning_address ? `Or send sats to the wallet's Lightning address: ${wallet.lightning_address}` : ""
+      ].filter(Boolean).join("\n"),
+      ...wallet?.lightning_address ? { lightning_address: wallet.lightning_address } : {}
+    };
+  }
+  const result = { present_to_operator: "" };
+  const lines = [
+    amountSats ? `The agent wallet needs a top-up (~${amountSats} sats). Two ways to fund it:` : "Two ways to fund the agent wallet:"
+  ];
+  if (amountSats && amountSats >= 1) {
+    try {
+      result.lightning_invoice = await createFundingInvoice(wallet.token, amountSats);
+    } catch {
+    }
+  }
+  lines.push(
+    result.lightning_invoice ? `1. INSTANT \u2014 pay this Lightning invoice from Cash App, Coinbase, or any Lightning wallet (settles in seconds):
+${result.lightning_invoice}` : `1. INSTANT \u2014 send sats from any Lightning wallet to the agent's Lightning address: ${wallet.lightning_address}
+   (If your app needs an exact-amount invoice \u2014 Cash App, Coinbase \u2014 ask the agent for one: setup_wallet {action:'funding_options', amount_sats:N}.)`
+  );
+  result.lightning_address = wallet.lightning_address;
+  try {
+    result.onchain_address = await getOnchainAddress(wallet.token);
+    lines.push(
+      `2. FROM AN EXCHANGE WITHOUT LIGHTNING (e.g. Robinhood) \u2014 send BTC on-chain to:
+${result.onchain_address}
+   Arrives after confirmation (~10\u201360 min). Minimum 300 sats; mining fees apply, so best for larger top-ups.`
+    );
+  } catch {
+    lines.push(
+      "2. FROM AN EXCHANGE WITHOUT LIGHTNING (e.g. Robinhood) \u2014 an on-chain deposit address could not be fetched right now; log in at coinos.io to get one, or use the Lightning option."
+    );
+  }
+  lines.push("The agent will detect the funds and continue automatically.");
+  result.present_to_operator = lines.join("\n");
+  return result;
 }
 
 // src/tools/setup-wallet.ts
 var OPERATOR_OPTIONS = [
   "To buy things automatically, your agent needs a Lightning wallet it can spend from. Three options:",
   "1. CREATE ONE NOW (recommended for getting started) \u2014 creates a hosted wallet at coinos.io (think prepaid card: funds are held by that service, so keep only small amounts, e.g. $10\u201320 worth of sats; the operator spending cap applies to every payment). Credentials are generated and stored only on this machine \u2014 Hypawave's servers never receive them.",
-  "2. CONNECT YOUR OWN WALLET \u2014 if you already use an NWC-capable wallet (Alby Hub, Primal, LNbits, your own node), provide its NWC connection string; no account is created anywhere. Note: self-hosted nodes need channel liquidity even for tiny payments.",
+  "2. CONNECT YOUR OWN WALLET \u2014 if you already use an NWC-capable wallet (Alby Hub, Coinos, Primal, LNbits, your own node), tell the agent which one and it will walk you through copying its NWC connection string; no account is created anywhere. Note: self-hosted nodes need channel liquidity even for tiny payments.",
   "3. SKIP \u2014 purchases will return a Lightning invoice to pay manually from any wallet (you'll also need the preimage from your wallet to confirm \u2014 fine for testing, clunky as a routine)."
+].join("\n");
+var NWC_WALLET_GUIDE = [
+  "Ask the operator which wallet they use, then give them the matching steps to copy its NWC connection string (starts with nostr+walletconnect://):",
+  "- Alby Hub: App Store (or Settings) \u2192 Connections \u2192 Add connection \u2192 set a budget \u2192 copy the connection secret.",
+  "- Coinos (existing account): coinos.io \u2192 Settings \u2192 Nostr Wallet Connect (Apps) \u2192 create/copy the connection string.",
+  "- Primal: Wallet \u2192 Settings \u2192 Connected apps \u2192 New connection \u2192 copy the string.",
+  "- LNbits: enable the NWC Service extension on your wallet \u2192 create a connection \u2192 copy the pairing URL.",
+  "- Self-hosted node (LND/CLN): run an NWC bridge (e.g. Alby Hub connected to the node) and create a connection there. Reminder: the node needs outbound channel liquidity.",
+  "Then re-call setup_wallet with {action:'connect_own', nwc_url:'<the string>'}."
 ].join("\n");
 var NWC_URI_RE = /^nostr\+walletconnect:\/\/[0-9a-f]{64}\?/i;
 async function tryBalance() {
@@ -906,15 +991,26 @@ function registerSetupWalletTools(server2) {
     "setup_wallet",
     {
       title: "Set up the agent's Lightning wallet",
-      description: "One-time wallet setup so purchases can pay automatically. Call with no arguments first: it returns the operator-facing options \u2014 present them to the operator verbatim and let them choose; do not choose for them. Then call {action:'create_hosted', confirm:true} ONLY after the operator explicitly agreed (creates a hosted custodial wallet at coinos.io; credentials are stored locally in ~/.hypawave/wallet.json and never sent to Hypawave), or {action:'connect_own', nwc_url:'nostr+walletconnect://\u2026'} to use an existing NWC wallet. The NWC_URL env var, when set, always takes precedence over anything configured here.",
+      description: "One-time wallet setup so purchases can pay automatically. Call with no arguments first: it returns the operator-facing options \u2014 present them to the operator verbatim and let them choose; do not choose for them. Then call {action:'create_hosted', confirm:true} ONLY after the operator explicitly agreed (creates a hosted custodial wallet at coinos.io; credentials are stored locally in ~/.hypawave/wallet.json and never sent to Hypawave), or {action:'connect_own'} to use an existing NWC wallet \u2014 without nwc_url it returns per-wallet steps to help the operator find their connection string. Also: {action:'funding_options', amount_sats?} returns operator-facing funding instructions for the configured wallet (instant Lightning invoice/address + on-chain deposit address for exchanges without Lightning, e.g. Robinhood) \u2014 present them verbatim whenever the wallet needs sats. The NWC_URL env var, when set, always takes precedence over anything configured here.",
       inputSchema: {
-        action: z5.enum(["create_hosted", "connect_own"]).optional().describe("Omit to get the options to present to the operator"),
+        action: z5.enum(["create_hosted", "connect_own", "funding_options"]).optional().describe("Omit to get the options to present to the operator"),
         confirm: z5.boolean().optional().describe("Required true for create_hosted \u2014 set only after the operator explicitly agreed"),
-        nwc_url: z5.string().optional().describe("For connect_own: the wallet's NWC connection string")
+        nwc_url: z5.string().optional().describe("For connect_own: the wallet's NWC connection string"),
+        amount_sats: z5.number().int().positive().optional().describe("For funding_options: mint an exact-amount Lightning funding invoice for this many sats")
       }
     },
-    async ({ action, confirm, nwc_url }) => {
+    async ({ action, confirm, nwc_url, amount_sats }) => {
       const envSet = Boolean(process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL);
+      if (action === "funding_options") {
+        if (!getNwcUrl()) {
+          return jsonResult({
+            ok: false,
+            message: "No wallet configured yet \u2014 run setup_wallet first, then request funding options."
+          });
+        }
+        const funding2 = await getFundingOptions(amount_sats);
+        return jsonResult({ ok: true, ...funding2 });
+      }
       if (!action) {
         const configured = Boolean(getNwcUrl());
         return jsonResult({
@@ -930,9 +1026,16 @@ function registerSetupWalletTools(server2) {
         });
       }
       if (action === "connect_own") {
-        if (!nwc_url || !NWC_URI_RE.test(nwc_url) || !/[?&]secret=[0-9a-f]{64}/i.test(nwc_url)) {
+        if (!nwc_url) {
+          return jsonResult({
+            ok: false,
+            needs_nwc_url: true,
+            present_to_operator: NWC_WALLET_GUIDE
+          });
+        }
+        if (!NWC_URI_RE.test(nwc_url) || !/[?&]secret=[0-9a-f]{64}/i.test(nwc_url)) {
           throw new Error(
-            "connect_own requires a valid NWC connection string: nostr+walletconnect://<64-hex-pubkey>?relay=\u2026&secret=<64-hex>"
+            "connect_own requires a valid NWC connection string: nostr+walletconnect://<64-hex-pubkey>?relay=\u2026&secret=<64-hex>. Call {action:'connect_own'} without nwc_url for per-wallet steps to find it."
           );
         }
         if (walletFileExists()) {
@@ -976,12 +1079,14 @@ function registerSetupWalletTools(server2) {
       }
       const wallet = await createCoinosWallet();
       const path = saveWalletFile(wallet);
+      const funding = await getFundingOptions().catch(() => null);
       return jsonResult({
         ok: true,
         provider: "coinos",
         lightning_address: wallet.lightning_address,
         credentials_file: path,
-        next: `Fund it by sending sats to ${wallet.lightning_address} (start small \u2014 5,000\u201350,000 sats). Then wallet_status shows the balance and purchases pay automatically under the spending cap.`,
+        ...funding ? { funding } : {},
+        next: `Fund it now (start small \u2014 5,000\u201350,000 sats): present the funding options above to the operator verbatim \u2014 instant via Lightning (Cash App, Coinbase, or any Lightning wallet), or on-chain from an exchange without Lightning (e.g. Robinhood; slower, mining fees). Then wallet_status shows the balance and purchases pay automatically under the spending cap.`,
         important: `Custodial wallet \u2014 coinos.io holds the funds; keep only small amounts. ${path} contains the ONLY copy of the credentials: back it up, and never delete it while the wallet holds funds.`
       });
     }

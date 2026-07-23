@@ -35,7 +35,18 @@ async function getClient(): Promise<NwcClient> {
 /** Pay a bolt11 via the operator's NWC wallet; returns the settlement preimage. */
 export async function payBolt11(bolt11: string): Promise<{ preimage: string }> {
   const client = await getClient();
-  const result = await client.payInvoice({ invoice: bolt11 });
+  let result;
+  try {
+    result = await client.payInvoice({ invoice: bolt11 });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/insufficient|balance|not enough|exceeds.*budget|quota/i.test(msg)) {
+      throw new Error(
+        `${msg} — the agent wallet balance is too low. Call setup_wallet {action:"funding_options", amount_sats:<needed>} and present the funding options to your operator.`
+      );
+    }
+    throw e;
+  }
   if (!result?.preimage || !/^[0-9a-fA-F]{64}$/.test(result.preimage)) {
     throw new Error(
       "wallet paid (or attempted) but returned no valid preimage — cannot prove settlement; check the payment in your wallet before retrying"

@@ -67,7 +67,7 @@ All env vars are optional — with no `NWC_URL` the server runs in manual mode (
 | `list_sales` | List your settled sales (payments/invoices) — reconcile missed webhooks |
 | **Utility** | |
 | `wallet_status` | Wallet balance, seller pubkey, spending cap, live platform fees/limits |
-| `setup_wallet` | One-time wallet setup: create a hosted Coinos wallet (with operator consent) or connect your own NWC string |
+| `setup_wallet` | One-time wallet setup: create a hosted Coinos wallet (with operator consent) or connect your own NWC wallet (with per-wallet steps to find the string); also serves operator funding options (Lightning + on-chain) |
 
 ## Buy in three calls
 
@@ -101,7 +101,9 @@ Selling needs **no special wallet** — payouts go straight to your Lightning Ad
 
 Paying requires a wallet that returns the settlement **preimage**. Connect any **NWC-capable** wallet (Coinos, Alby Hub, Primal, LNbits, …) via `NWC_URL` — the NWC spec guarantees `pay_invoice` returns the preimage, so any NWC wallet works.
 
-**No wallet yet? `setup_wallet`.** With explicit operator consent it registers a fresh hosted wallet at coinos.io (custodial — keep only small amounts) and saves the credentials to `~/.hypawave/wallet.json` (0600, local only; Hypawave's servers never receive them — **back this file up: it holds the only copy**). Fund it by sending sats to the returned Lightning address. Or pass your own NWC string via `{action:"connect_own"}`. `NWC_URL`, when set, always wins over the wallet file.
+**No wallet yet? `setup_wallet`.** With explicit operator consent it registers a fresh hosted wallet at coinos.io (custodial — keep only small amounts) and saves the credentials to `~/.hypawave/wallet.json` (0600, local only; Hypawave's servers never receive them — **back this file up: it holds the only copy**). Or `{action:"connect_own"}` connects a wallet you already use — called without an NWC string it returns per-wallet steps (Alby Hub, Coinos, Primal, LNbits, self-hosted node) for finding it. `NWC_URL`, when set, always wins over the wallet file.
+
+**Funding the wallet (the human's only job).** `setup_wallet {action:"funding_options", amount_sats?}` returns operator-facing instructions the agent presents verbatim, with two paths: **instant** — an exact-amount Lightning invoice (payable from Cash App, Coinbase, or any Lightning wallet) or the wallet's Lightning address; **on-chain** — a deposit address for exchanges without Lightning support (e.g. Robinhood; ~10–60 min, mining fees, 300-sat minimum — best for larger top-ups). Low-balance payment failures point the agent at this action automatically. No bitcoin at all? Any of those apps sells it.
 
 **No wallet configured? Manual mode.** `buy_offer` / `pay_invoice` return the bolt11; pay it with any preimage-returning wallet and submit the preimage via `confirm_payment` (or re-call `pay_invoice` with it).
 

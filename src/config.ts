@@ -19,6 +19,8 @@ export interface WalletFile {
   nwc_url: string;
   username?: string;
   password?: string;
+  /** Coinos JWT (no expiry) — lets the agent mint funding invoices / on-chain deposit addresses. */
+  token?: string;
   lightning_address?: string;
   created_at?: string;
 }

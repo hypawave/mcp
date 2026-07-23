@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createCoinosWallet } from "../src/coinos.js";
+import { createCoinosWallet, createFundingInvoice, getOnchainAddress } from "../src/coinos.js";
 
 const mockFetch = vi.fn();
 
@@ -25,6 +25,7 @@ describe("createCoinosWallet()", () => {
     const w = await createCoinosWallet();
 
     expect(w.provider).toBe("coinos");
+    expect(w.token).toBe("jwt123"); // persisted for later funding-invoice / on-chain address minting
     expect(w.nwc_url).toBe(NWC);
     expect(w.username).toMatch(/^hw[0-9a-f]{12}$/); // Coinos allows letters+numbers only, 2–24 chars
     expect(w.password.length).toBeGreaterThanOrEqual(24);
@@ -63,5 +64,45 @@ describe("createCoinosWallet()", () => {
   it("throws on non-JSON success bodies", async () => {
     mockFetch.mockResolvedValueOnce(new Response("<html>cf challenge</html>", { status: 200 }));
     await expect(createCoinosWallet()).rejects.toThrow(/non-JSON/);
+  });
+});
+
+describe("createFundingInvoice()", () => {
+  it("mints an exact-amount lightning invoice and returns the bolt11", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { hash: "lnbc100n1fake", text: "lnbc100n1fake" }));
+
+    const bolt11 = await createFundingInvoice("jwt123", 10_000);
+    expect(bolt11).toBe("lnbc100n1fake");
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toBe("https://coinos.io/api/invoice");
+    expect(init.headers.authorization).toBe("Bearer jwt123");
+    expect(JSON.parse(init.body).invoice).toEqual({ type: "lightning", amount: 10_000 });
+  });
+
+  it("throws when the response carries no bolt11", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { hash: "not-an-invoice" }));
+    await expect(createFundingInvoice("jwt123", 1000)).rejects.toThrow(/no bolt11/);
+  });
+});
+
+describe("getOnchainAddress()", () => {
+  it("mints an any-amount bitcoin invoice and returns the address", async () => {
+    const addr = `bc1q${"x".repeat(38)}`;
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { hash: addr, text: `bitcoin:${addr}` }));
+
+    const address = await getOnchainAddress("jwt123");
+    expect(address).toBe(addr);
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toBe("https://coinos.io/api/invoice");
+    expect(init.headers.authorization).toBe("Bearer jwt123");
+    // amount 0 = any-amount address; fixed amounts under 300 sats are rejected by Coinos' dust rule
+    expect(JSON.parse(init.body).invoice).toEqual({ type: "bitcoin", amount: 0 });
+  });
+
+  it("throws when the response carries no plausible address", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { hash: "lnbc100n1notanaddress" }));
+    await expect(getOnchainAddress("jwt123")).rejects.toThrow(/no on-chain/);
   });
 });
