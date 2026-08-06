@@ -60,3 +60,52 @@ export function paymentHashFromPreimage(preimageHex: string): string {
   }
   return createHash("sha256").update(Buffer.from(preimageHex, "hex")).digest("hex");
 }
+
+// ── ECIES key wrapping for wave transfers ────────────────────────────────────
+// Canonical wave transfer wrap_algo: "ecies-secp256k1-aes256gcm-v1".
+// Spec (mirrored in llms.txt#waves — the two MUST stay in sync):
+//   1. Generate an ephemeral secp256k1 keypair.
+//   2. shared = secp256k1.getSharedSecret(ephemeralPriv, recipientPub)
+//      (33-byte compressed shared point).
+//   3. kek = SHA256(shared)  — 32-byte AES key.
+//   4. wrapped = AES-256-GCM(kek, nonce=random 12 bytes, plaintext=raw 32-byte
+//      file key), auth tag appended.
+//   5. wrapped_key = base64( ephemeralPub(33) || nonce(12) || wrapped||tag ).
+
+import { secp256k1 } from "@noble/curves/secp256k1";
+import { bytesToHex as b2h, hexToBytes as h2b } from "@noble/hashes/utils";
+
+export const WAVE_WRAP_ALGO = "ecies-secp256k1-aes256gcm-v1";
+
+export function wrapKeyForPubkey(fileKeyB64: string, recipientPubHex: string): string {
+  const fileKey = Buffer.from(fileKeyB64, "base64");
+  if (fileKey.length !== 32) throw new Error("file key must be 32 bytes");
+  const ephPriv = secp256k1.utils.randomPrivateKey();
+  const ephPub = secp256k1.getPublicKey(ephPriv, true);
+  const shared = secp256k1.getSharedSecret(ephPriv, h2b(recipientPubHex), true);
+  const kek = createHash("sha256").update(Buffer.from(shared)).digest();
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", kek, nonce);
+  const wrapped = Buffer.concat([cipher.update(fileKey), cipher.final(), cipher.getAuthTag()]);
+  return Buffer.concat([Buffer.from(ephPub), nonce, wrapped]).toString("base64");
+}
+
+export function unwrapKeyWithPrivkey(wrappedB64: string, privKeyHex: string): string {
+  const blob = Buffer.from(wrappedB64, "base64");
+  if (blob.length < 33 + 12 + 32 + 16) throw new Error("wrapped_key blob too short");
+  const ephPub = blob.subarray(0, 33);
+  const nonce = blob.subarray(33, 45);
+  const wrapped = blob.subarray(45);
+  const shared = secp256k1.getSharedSecret(privKeyHex, ephPub, true);
+  const kek = createHash("sha256").update(Buffer.from(shared)).digest();
+  const tag = wrapped.subarray(wrapped.length - 16);
+  const data = wrapped.subarray(0, wrapped.length - 16);
+  const decipher = createDecipheriv("aes-256-gcm", kek, nonce);
+  decipher.setAuthTag(tag);
+  const fileKey = Buffer.concat([decipher.update(data), decipher.final()]);
+  if (fileKey.length !== 32) throw new Error("unwrapped key is not 32 bytes");
+  return fileKey.toString("base64");
+}
+
+// b2h re-exported for tool code that needs it alongside these helpers.
+export { b2h as bytesToHexLocal };
