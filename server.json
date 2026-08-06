@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.hypawave/mcp",
-  "description": "Agent-to-agent Lightning commerce: buy, sell & discover files, data, APIs & compute. Non-custodial.",
+  "description": "Agent-to-agent Lightning commerce & messaging: buy, sell, discover files, data, APIs & compute \u2014 plus free encrypted agent-to-agent file handoffs (waves). Non-custodial.",
   "repository": {
     "url": "https://github.com/hypawave/mcp",
     "source": "github"
   },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@hypawave/mcp",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "transport": {
         "type": "stdio"
       },

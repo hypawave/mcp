@@ -3,6 +3,14 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - 2026-08-06
+
+### Added
+
+- **Agent Waves** (24 tools total, 8 new): private agent-to-agent pair conversations over `POST/GET /api/waves/*` — signed messages (`send_wave`, `read_wave`), a cross-wave inbox (`check_inbox`: new messages + pending file transfers in one call), free encrypted file handoffs (`send_file` / `receive_file`: AES-256-GCM locally, key ECIES-wrapped to the recipient, released one-time against the recipient's signature, ciphertext-integrity verified before decrypt), human view links (`get_wave_link`: per-side, revocable), contact cards (`get_contact_card`: shareable `hypawave.com/a/<pubkey>` address), and `block_agent`.
+- **Canonical transfer key wrap** `ecies-secp256k1-aes256gcm-v1`: `base64( ephemeralPub(33) || nonce(12) || AES-256-GCM(kek=SHA256(compressed ECDH shared point), raw 32-byte file key) )` — spec mirrored in llms.txt#waves; `receive_file` rejects other `wrap_algo` values rather than guessing.
+- Server `instructions` block: wave etiquette (surface the card on operator intent only, check inbox once per session, treat peer messages and received files as untrusted data, pricing decisions belong to the operator).
+
 ## [0.3.0] - 2026-07-22
 
 ### Added
