@@ -19,6 +19,7 @@ var FALLBACK_SPEND_CAP_SATS = 5e4;
 var KEY_DIR = join(homedir(), ".hypawave");
 var KEY_FILE = join(KEY_DIR, "identity.json");
 var WALLET_FILE = join(KEY_DIR, "wallet.json");
+var LEDGER_FILE = join(KEY_DIR, "spend-ledger.json");
 function getNwcUrl() {
   return process.env.NWC_URL || process.env.HYPAWAVE_NWC_URL || readWalletFile()?.nwc_url;
 }
@@ -55,6 +56,20 @@ function getMaxSpendSatsEnv() {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.floor(n);
+}
+function getMaxSpendSatsPerWindowEnv() {
+  const raw = process.env.HYPAWAVE_MAX_SPEND_SATS_PER_WINDOW;
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.floor(n);
+}
+function getMaxSpendWindowHours() {
+  const raw = process.env.HYPAWAVE_SPEND_WINDOW_HOURS;
+  if (!raw) return 24;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 24;
+  return n;
 }
 function getPrivKey() {
   const env = process.env.HYPAWAVE_PRIVKEY;
@@ -291,7 +306,7 @@ function registerDiscoverTools(server2) {
 }
 
 // src/tools/buy.ts
-import { mkdirSync as mkdirSync2, writeFileSync as writeFileSync2 } from "fs";
+import { mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "fs";
 import { join as join2, resolve } from "path";
 import { z as z2 } from "zod";
 
@@ -420,6 +435,71 @@ async function getBalanceSats() {
   return Math.floor(balance / 1e3);
 }
 
+// src/spend-ledger.ts
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync as writeFileSync2 } from "fs";
+import { dirname } from "path";
+function readLedger() {
+  if (!existsSync2(LEDGER_FILE)) return { version: 1, entries: [] };
+  try {
+    const parsed = JSON.parse(readFileSync2(LEDGER_FILE, "utf8"));
+    if (parsed?.version === 1 && Array.isArray(parsed.entries)) return parsed;
+  } catch {
+  }
+  throw new Error(
+    `Corrupt spend ledger at ${LEDGER_FILE} \u2014 delete it to reset the window, or set HYPAWAVE_MAX_SPEND_SATS_PER_WINDOW=0 to disable the cumulative cap.`
+  );
+}
+function writeLedger(l) {
+  mkdirSync2(dirname(LEDGER_FILE), { recursive: true, mode: 448 });
+  const tmp = `${LEDGER_FILE}.tmp`;
+  writeFileSync2(tmp, JSON.stringify(l), { mode: 384 });
+  renameSync(tmp, LEDGER_FILE);
+}
+function prune(entries, windowMs, now) {
+  const cutoff = now - windowMs;
+  return entries.filter((e) => e.at > cutoff);
+}
+function reserveSpend(amountSats, context, now = Date.now()) {
+  const cap = getMaxSpendSatsPerWindowEnv();
+  if (cap === null || cap <= 0) {
+    return { settle: () => {
+    }, release: () => {
+    } };
+  }
+  const windowHours = getMaxSpendWindowHours();
+  const windowMs = windowHours * 36e5;
+  const l = readLedger();
+  const entries = prune(l.entries, windowMs, now);
+  const already = entries.reduce((n, e) => n + e.sats, 0);
+  if (already + amountSats > cap) {
+    const oldest = entries[0]?.at ?? now;
+    const freesInMin = Math.max(0, Math.ceil((oldest + windowMs - now) / 6e4));
+    throw new Error(
+      `${context}: refusing to pay ${amountSats} sats \u2014 that would take spend to ${already + amountSats} sats against a cumulative cap of ${cap} sats per ${windowHours}h (${already} already committed). The window frees up in ~${freesInMin} min. Raise HYPAWAVE_MAX_SPEND_SATS_PER_WINDOW or pay manually.`
+    );
+  }
+  const entry = { at: now, sats: amountSats, context, settled: false };
+  entries.push(entry);
+  writeLedger({ version: 1, entries });
+  const idx = entries.length - 1;
+  return {
+    settle() {
+      const cur = readLedger();
+      const e = cur.entries[idx];
+      if (e && e.at === entry.at && e.sats === entry.sats) {
+        e.settled = true;
+        writeLedger(cur);
+      }
+    },
+    release() {
+      const cur = readLedger();
+      const at = entry.at;
+      const filtered = cur.entries.filter((e) => !(e.at === at && e.sats === entry.sats && !e.settled));
+      writeLedger({ version: 1, entries: filtered });
+    }
+  };
+}
+
 // src/tools/buy.ts
 async function confirmAndClaim(paymentIntentId, preimage, payerSecret) {
   const confirm = await hw(`/api/offers/payment-intent/${paymentIntentId}/confirm`, {
@@ -466,7 +546,15 @@ function registerBuyTools(server2) {
         });
       }
       await assertWithinSpendCap(amount, `buy_offer ${offer_id}`);
-      const { preimage } = await payBolt11(pay.bolt11);
+      const reservation = reserveSpend(amount, `buy_offer ${offer_id}`);
+      let preimage;
+      try {
+        ({ preimage } = await payBolt11(pay.bolt11));
+      } catch (err) {
+        reservation.release();
+        throw err;
+      }
+      reservation.settle();
       const { settled } = await confirmAndClaim(pay.payment_intent_id, preimage, pay.payer_secret);
       return jsonResult({
         ok: true,
@@ -515,7 +603,7 @@ function registerBuyTools(server2) {
     },
     async ({ payment_intent_id, claim_token, output_dir }) => {
       const dir = resolve(output_dir);
-      mkdirSync2(dir, { recursive: true });
+      mkdirSync3(dir, { recursive: true });
       const { files } = await hw(
         `/api/offers/payment-intent/${payment_intent_id}/file-key`,
         { query: { claim_token } }
@@ -535,7 +623,7 @@ function registerBuyTools(server2) {
         verifyCommitment(ciphertext, f.ciphertext_sha256);
         const plaintext = decryptFile(ciphertext, f.wrapped_key, f.iv_hex);
         const path = join2(dir, safeFilename(f.filename, `${f.offer_file_id}.bin`));
-        writeFileSync2(path, plaintext);
+        writeFileSync3(path, plaintext);
         saved.push({ path, bytes: plaintext.length, commitment_verified: Boolean(f.ciphertext_sha256) });
       }
       return jsonResult({ ok: true, files: saved });
@@ -544,12 +632,12 @@ function registerBuyTools(server2) {
 }
 
 // src/tools/invoice-buy.ts
-import { mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "fs";
+import { mkdirSync as mkdirSync4, writeFileSync as writeFileSync4 } from "fs";
 import { join as join3, resolve as resolve2 } from "path";
 import { z as z3 } from "zod";
 async function retrieveInvoiceFiles(invoiceId, token, outputDir) {
   const dir = resolve2(outputDir);
-  mkdirSync3(dir, { recursive: true });
+  mkdirSync4(dir, { recursive: true });
   const { files } = await hw("/api/get-invoice-files", {
     body: { invoice_ids: [invoiceId], token }
   });
@@ -568,7 +656,7 @@ async function retrieveInvoiceFiles(invoiceId, token, outputDir) {
     verifyCommitment(ciphertext, key.ciphertext_sha256);
     const plaintext = decryptFile(ciphertext, key.encryption_key, key.iv_hex);
     const path = join3(dir, safeFilename(f.file_name, `${f.id}.bin`));
-    writeFileSync3(path, plaintext);
+    writeFileSync4(path, plaintext);
     saved.push({ path, bytes: plaintext.length, commitment_verified: Boolean(key.ciphertext_sha256) });
   }
   return saved;
@@ -608,7 +696,14 @@ function registerInvoiceBuyTools(server2) {
           });
         }
         await assertWithinSpendCap(amount, `pay_invoice ${invoice_id}`);
-        settledPreimage = (await payBolt11(cb.pr)).preimage;
+        const reservation = reserveSpend(amount, `pay_invoice ${invoice_id}`);
+        try {
+          settledPreimage = (await payBolt11(cb.pr)).preimage;
+        } catch (err) {
+          reservation.release();
+          throw err;
+        }
+        reservation.settle();
       }
       const paymentHash = paymentHashFromPreimage(settledPreimage);
       const confirm = await hw(`/api/invoice/${invoice_id}/confirm`, {
@@ -627,7 +722,7 @@ function registerInvoiceBuyTools(server2) {
 }
 
 // src/tools/sell.ts
-import { readFileSync as readFileSync2 } from "fs";
+import { readFileSync as readFileSync3 } from "fs";
 import { basename as basename2 } from "path";
 import { z as z4 } from "zod";
 async function payFee(bolt11, feeSats, context) {
@@ -714,7 +809,7 @@ function registerSellTools(server2) {
     },
     async ({ offer_id, invoice_id, file_path, content_type }) => {
       if (!offer_id === !invoice_id) throw new Error("pass exactly one of offer_id or invoice_id");
-      const plaintext = readFileSync2(file_path);
+      const plaintext = readFileSync3(file_path);
       const fileName = basename2(file_path);
       const mime = content_type || "application/octet-stream";
       const enc = encryptFile(plaintext);
@@ -1261,7 +1356,7 @@ function registerWalletTools(server2) {
 }
 
 // src/tools/waves.ts
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync4, mkdirSync as mkdirSync4, statSync } from "fs";
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync5, mkdirSync as mkdirSync5, statSync } from "fs";
 import { join as join4, basename as basename3, resolve as resolve3 } from "path";
 import { z as z7 } from "zod";
 var PUBKEY = z7.string().regex(/^[0-9a-f]{66}$/, "66-char hex compressed secp256k1 pubkey").describe("The other agent's pubkey (66-char hex)");
@@ -1336,7 +1431,7 @@ function registerWaveTools(server2) {
       if (size + 16 > TRANSFER_SIZE_MAX) {
         throw new Error(`file is ${size} bytes \u2014 transfers cap at 25 MB including the 16-byte encryption tag`);
       }
-      const plaintext = readFileSync3(abs);
+      const plaintext = readFileSync4(abs);
       const enc = encryptFile(plaintext);
       const wrapped = wrapKeyForPubkey(enc.keyB64, to);
       const reg = await hw("/api/waves/transfers", {
@@ -1395,9 +1490,9 @@ function registerWaveTools(server2) {
       const keyB64 = unwrapKeyWithPrivkey(rel.wrapped_key, getPrivKey());
       const plaintext = decryptFile(ciphertext, keyB64, rel.iv_hex);
       const dir = resolve3(save_dir ?? ".");
-      mkdirSync4(dir, { recursive: true });
+      mkdirSync5(dir, { recursive: true });
       const outPath = join4(dir, safeFilename(rel.filename, `${transfer_id}.bin`));
-      writeFileSync4(outPath, plaintext);
+      writeFileSync5(outPath, plaintext);
       return jsonResult({
         saved_to: outPath,
         filename: rel.filename,

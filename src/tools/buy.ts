@@ -6,6 +6,7 @@ import { hw } from "../api.js";
 import { decryptFile, verifyCommitment } from "../crypto.js";
 import { nwcConfigured, payBolt11 } from "../nwc.js";
 import { assertWithinSpendCap, effectiveAmountSats, jsonResult, pollUntil, safeFilename } from "../util.js";
+import { reserveSpend } from "../spend-ledger.js";
 
 interface PayOfferResponse {
   payment_intent_id: string;
@@ -92,7 +93,17 @@ export function registerBuyTools(server: McpServer) {
       }
 
       await assertWithinSpendCap(amount, `buy_offer ${offer_id}`);
-      const { preimage } = await payBolt11(pay.bolt11);
+      // Reserve against the rolling window BEFORE paying: two concurrent buys
+      // must not both see headroom. Released if the payment does not happen.
+      const reservation = reserveSpend(amount!, `buy_offer ${offer_id}`);
+      let preimage: string;
+      try {
+        ({ preimage } = await payBolt11(pay.bolt11));
+      } catch (err) {
+        reservation.release();
+        throw err;
+      }
+      reservation.settle();
       const { settled } = await confirmAndClaim(pay.payment_intent_id, preimage, pay.payer_secret);
 
       return jsonResult({

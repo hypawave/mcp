@@ -130,11 +130,14 @@ Paying requires a wallet that returns the settlement **preimage**. Connect any *
 | `NWC_URL` | no | Nostr Wallet Connect string for automatic payments. Absent → falls back to `~/.hypawave/wallet.json` (from `setup_wallet`), else manual mode. |
 | `COINOS_API_URL` | no | Coinos API base for `setup_wallet` (default `https://coinos.io/api`). |
 | `HYPAWAVE_MAX_SPEND_SATS` | no | Per-payment cap enforced in code. Unset → derived live from the platform's `max_invoice_usd` at the current BTC price (so the default never blocks a platform-allowed amount). Payments above it are refused. |
+| `HYPAWAVE_MAX_SPEND_SATS_PER_WINDOW` | no | **Cumulative** cap: total sats this machine may spend per window, across all payments. Unset or `0` → no cumulative limit (today's behaviour). Persisted to `~/.hypawave/spend-ledger.json`, so it survives restarts. |
+| `HYPAWAVE_SPEND_WINDOW_HOURS` | no | Window length for the cumulative cap. Default `24`. |
 | `HYPAWAVE_PRIVKEY` | no | 64-char hex secp256k1 key = your seller identity. Auto-generated to `~/.hypawave/identity.json` (0600) if unset. **Back it up — it controls your offers.** |
 | `HYPAWAVE_API_URL` | no | API base (default `https://hypawave.com`). |
 
 ## Safety model
 
+- **Cumulative spending cap** (optional): `HYPAWAVE_MAX_SPEND_SATS_PER_WINDOW` bounds *total* spend per rolling window, not just each payment. The per-payment cap cannot see a pattern — an agent paying just under it repeatedly stays under it every time. Spend is reserved *before* the payment and committed after, so two concurrent buys can't both see headroom, and the ledger is on disk so a restart doesn't reset the window.
 - **Spending cap**: every principal/fee payment is checked against the effective cap before paying — `HYPAWAVE_MAX_SPEND_SATS` if set, otherwise the platform's own `max_invoice_usd` converted at the live BTC price. The bolt11 amount is cross-checked against the server quote. Per-purchase bounds via `expected_max_sats`.
 - **Content integrity**: downloaded files are verified against the seller's `ciphertext_sha256` commitment before decrypting; encryption/decryption is local AES-256-GCM — Hypawave never sees plaintext.
 - **Non-custodial**: principal flows buyer→seller wallet-to-wallet. Settlement is final — no refunds. `payment_count` on marketplace offers is sales volume, not a trust score.

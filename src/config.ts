@@ -13,6 +13,8 @@ export const FALLBACK_SPEND_CAP_SATS = 50_000;
 const KEY_DIR = join(homedir(), ".hypawave");
 const KEY_FILE = join(KEY_DIR, "identity.json");
 const WALLET_FILE = join(KEY_DIR, "wallet.json");
+/** Rolling-window spend ledger — the cumulative half of the spending guardrail. */
+export const LEDGER_FILE = join(KEY_DIR, "spend-ledger.json");
 
 export interface WalletFile {
   provider: "coinos" | "custom";
@@ -76,6 +78,27 @@ export function getMaxSpendSatsEnv(): number | null {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.floor(n);
+}
+
+/**
+ * Cumulative cap: total sats this machine may spend per window. Unset (or 0)
+ * leaves today's behaviour unchanged — only the per-payment cap applies.
+ */
+export function getMaxSpendSatsPerWindowEnv(): number | null {
+  const raw = process.env.HYPAWAVE_MAX_SPEND_SATS_PER_WINDOW;
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.floor(n);
+}
+
+/** Window length for the cumulative cap. Defaults to 24h. */
+export function getMaxSpendWindowHours(): number {
+  const raw = process.env.HYPAWAVE_SPEND_WINDOW_HOURS;
+  if (!raw) return 24;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 24;
+  return n;
 }
 
 /**

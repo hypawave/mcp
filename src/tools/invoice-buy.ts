@@ -5,6 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { hw } from "../api.js";
 import { decryptFile, paymentHashFromPreimage, verifyCommitment } from "../crypto.js";
 import { nwcConfigured, payBolt11 } from "../nwc.js";
+import { reserveSpend } from "../spend-ledger.js";
 import { assertWithinSpendCap, effectiveAmountSats, jsonResult, safeFilename } from "../util.js";
 
 interface InvoiceFileRecord {
@@ -95,7 +96,15 @@ export function registerInvoiceBuyTools(server: McpServer) {
           });
         }
         await assertWithinSpendCap(amount, `pay_invoice ${invoice_id}`);
-        settledPreimage = (await payBolt11(cb.pr)).preimage;
+        // Reserve against the rolling window BEFORE paying (see spend-ledger.ts).
+        const reservation = reserveSpend(amount!, `pay_invoice ${invoice_id}`);
+        try {
+          settledPreimage = (await payBolt11(cb.pr)).preimage;
+        } catch (err) {
+          reservation.release();
+          throw err;
+        }
+        reservation.settle();
       }
 
       const paymentHash = paymentHashFromPreimage(settledPreimage);
