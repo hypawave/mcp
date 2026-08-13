@@ -13,12 +13,13 @@ A **local stdio MCP server** for Hypawave's accountless Lightning paths (3a/3b).
 
 **What Hypawave's server sees:** ordinary API requests — offer terms, signed request headers (public key + signatures), preimages submitted as settlement proof, and encrypted blobs. Nothing that lets anyone spend from your wallet or impersonate your identity.
 
-## Spending guardrails (and their limits)
+## Spending guardrails — what each layer bounds
 
-- **Per-payment cap, enforced in code before paying:** `HYPAWAVE_MAX_SPEND_SATS` if set, otherwise derived live from the platform's own maximum invoice size. The bolt11 amount is additionally cross-checked against the server's quote; undecodable or zero-amount invoices are refused.
+- **Platform ceiling (server-side):** Hypawave rejects invoice creation above its configured maximum invoice size, so no seller can quote you more than that. Set by Hypawave, not by you.
+- **Per-payment cap (client-side, before paying):** `HYPAWAVE_MAX_SPEND_SATS` if set, otherwise derived live from the platform ceiling at the current BTC price. Bounds the size of any one payment — your control, on your machine. The bolt11 amount is cross-checked against the server's quote; undecodable or zero-amount invoices are refused.
 - Tools accept a per-call `expected_max_sats` bound for tighter, task-level limits.
 - **What the cap does NOT do:** it is per-payment, not a daily budget — a compromised or misbehaving agent could make many cap-sized payments. Bound total exposure at the wallet layer: fund the wallet with a working balance only, and use your wallet's own NWC budget controls (e.g. a connection-level `max_amount`) as the outer wall.
-- Hypawave enforces no spending limits server-side. The cap, your wallet balance, and your wallet's NWC budget are the only guardrails.
+- Hypawave enforces no limit on your **total** spend. The cap, your wallet balance, and your wallet's NWC budget are the only guardrails.
 
 ## Payment and delivery integrity
 

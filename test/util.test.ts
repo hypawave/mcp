@@ -32,7 +32,7 @@ describe("assertWithinSpendCap", () => {
 
   it("refuses amounts above the env cap with an actionable message", async () => {
     process.env.HYPAWAVE_MAX_SPEND_SATS = "500";
-    await expect(assertWithinSpendCap(501, "buy_offer abc")).rejects.toThrow(/exceeds the spending cap of 500/);
+    await expect(assertWithinSpendCap(501, "buy_offer abc")).rejects.toThrow(/exceeds the per-payment cap of 500/);
   });
 
   it("refuses unknown amounts outright", async () => {

@@ -45,9 +45,15 @@ export async function getSpendCapSats(): Promise<{ cap: number; source: string }
 }
 
 /**
- * Operator spending guardrail: refuse any payment above the effective cap.
- * Hypawave enforces no limits server-side — this cap and the wallet balance
- * are the only guardrails on what an agent can spend.
+ * Per-payment size bound, checked before paying. This limits how large any
+ * single payment may be — not how much an agent may spend in total.
+ *
+ * The default tracks the platform's own maximum invoice size, so it never
+ * refuses an amount Hypawave itself would allow, and it keeps payments in the
+ * range Lightning reliably routes. An operator can set HYPAWAVE_MAX_SPEND_SATS
+ * lower to tighten it on their own machine.
+ *
+ * Total spend is bounded at the wallet layer, not here — see SECURITY.md.
  */
 export async function assertWithinSpendCap(amountSats: number | null, context: string): Promise<void> {
   if (amountSats === null) {
@@ -58,7 +64,7 @@ export async function assertWithinSpendCap(amountSats: number | null, context: s
   const { cap, source } = await getSpendCapSats();
   if (amountSats > cap) {
     throw new Error(
-      `${context}: amount ${amountSats} sats exceeds the spending cap of ${cap} sats (${source}). Not paid. Raise HYPAWAVE_MAX_SPEND_SATS or pay manually and use confirm_payment.`
+      `${context}: amount ${amountSats} sats exceeds the per-payment cap of ${cap} sats (${source}). Not paid. Raise HYPAWAVE_MAX_SPEND_SATS or pay manually and use confirm_payment.`
     );
   }
 }

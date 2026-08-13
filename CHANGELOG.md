@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.1] - 2026-08-12
+
+### Changed
+
+- **Documentation: `HYPAWAVE_MAX_SPEND_SATS` is a per-payment size bound, not a spending budget.** The previous wording ("spending guardrail", "the only guardrails on what an agent can spend") read as a cumulative cap. It bounds the size of any one payment — keeping it within platform policy and in the range Lightning reliably routes — and never limited total spend. `SECURITY.md` now sets out what each layer bounds: platform ceiling (server-side, caps what a seller may charge) → per-payment cap (client-side, your machine) → your wallet's NWC connection budget (the only cumulative wall). No behavioural change.
+- Payment refusal message now reads "exceeds the per-payment cap of N sats".
+
 ## [0.4.0] - 2026-08-06
 
 ### Added

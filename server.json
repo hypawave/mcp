@@ -6,12 +6,12 @@
     "url": "https://github.com/hypawave/mcp",
     "source": "github"
   },
-  "version": "0.4.0",
+  "version": "0.4.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@hypawave/mcp",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "transport": {
         "type": "stdio"
       },
@@ -25,7 +25,7 @@
         },
         {
           "name": "HYPAWAVE_MAX_SPEND_SATS",
-          "description": "Per-payment spending cap in sats. Unset = derived live from the platform's max invoice size.",
+          "description": "Maximum size of any one payment, in sats — not a total-spend budget. Unset = derived live from the platform's max invoice size.",
           "isRequired": false,
           "isSecret": false,
           "format": "number"

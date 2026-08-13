@@ -226,7 +226,7 @@ async function assertWithinSpendCap(amountSats, context) {
   const { cap, source } = await getSpendCapSats();
   if (amountSats > cap) {
     throw new Error(
-      `${context}: amount ${amountSats} sats exceeds the spending cap of ${cap} sats (${source}). Not paid. Raise HYPAWAVE_MAX_SPEND_SATS or pay manually and use confirm_payment.`
+      `${context}: amount ${amountSats} sats exceeds the per-payment cap of ${cap} sats (${source}). Not paid. Raise HYPAWAVE_MAX_SPEND_SATS or pay manually and use confirm_payment.`
     );
   }
 }
