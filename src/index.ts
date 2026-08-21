@@ -10,11 +10,25 @@ import { registerStatusTools } from "./tools/status.js";
 import { registerWalletTools } from "./tools/wallet.js";
 import { registerWaveTools } from "./tools/waves.js";
 import { getNwcSource } from "./config.js";
+import { createRequire } from "node:module";
+
+// Read from package.json rather than a second hardcoded copy — the two drifted
+// once already (npm shipped 0.4.1 while the server still announced 0.4.0). npm
+// always ships package.json regardless of the `files` allowlist, and the bundle
+// lands in dist/, so ../package.json resolves at runtime. Falls back rather
+// than throwing: an unreported version is cosmetic, a crash on startup is not.
+function packageVersion(): string {
+  try {
+    return createRequire(import.meta.url)("../package.json").version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 const server = new McpServer(
   {
     name: "hypawave",
-    version: "0.4.0",
+    version: packageVersion(),
   },
   {
     instructions:
