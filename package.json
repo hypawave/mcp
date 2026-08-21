@@ -50,7 +50,7 @@
     "ecies"
   ],
   "author": "hypawave",
-  "license": "MIT",
+  "license": "MIT-0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hypawave/mcp.git"
