@@ -18,6 +18,9 @@ export interface RequestOptions {
   query?: Record<string, string | number | undefined>;
   /** Sign with the pubkey identity (seller routes under /api/offers). */
   signed?: boolean;
+  /** Abort after this many ms. Used by the inbox hook, which runs inside a
+   *  client's prompt-submit budget and must never stall the operator's turn. */
+  timeoutMs?: number;
 }
 
 export async function hw<T = Record<string, unknown>>(path: string, opts: RequestOptions = {}): Promise<T> {
@@ -39,7 +42,12 @@ export async function hw<T = Record<string, unknown>>(path: string, opts: Reques
     bodyStr = JSON.stringify(opts.body);
   }
 
-  const res = await fetch(url, { method, headers, body: bodyStr });
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: bodyStr,
+    signal: opts.timeoutMs ? AbortSignal.timeout(opts.timeoutMs) : undefined,
+  });
 
   // Parse text first — error bodies are not guaranteed to be JSON.
   const text = await res.text();

@@ -13,6 +13,7 @@ export const FALLBACK_SPEND_CAP_SATS = 50_000;
 const KEY_DIR = join(homedir(), ".hypawave");
 const KEY_FILE = join(KEY_DIR, "identity.json");
 const WALLET_FILE = join(KEY_DIR, "wallet.json");
+const INBOX_FILE = join(KEY_DIR, "inbox-cursor.json");
 
 export interface WalletFile {
   provider: "coinos" | "custom";
@@ -123,4 +124,55 @@ function generatePrivKey(): string {
       /* out of curve order — retry */
     }
   }
+}
+
+export interface InboxState {
+  /** Keyset cursor from the last successful inbox read ("<created_at>|<id>"). */
+  cursor?: string;
+  /** Unix ms of the last completed check — drives the hook throttle. */
+  checked_at?: number;
+  /** Set once the operator has been told their own agent address. */
+  announced_at?: string;
+  /** Set once check_inbox has offered to turn notifications on. Never nag twice. */
+  hook_hint_at?: string;
+}
+
+/**
+ * Whether an identity already exists. The inbox check uses this to bail out
+ * rather than calling getPrivKey(), which GENERATES and persists a keypair on
+ * first use — a hook firing on every session start must never create an
+ * identity as a side effect for someone who has never used Hypawave.
+ */
+export function identityExists(): boolean {
+  return !!process.env.HYPAWAVE_PRIVKEY || existsSync(KEY_FILE);
+}
+
+/** Never throws — a corrupt/missing cursor file just means "check from scratch". */
+export function readInboxState(): InboxState {
+  try {
+    if (!existsSync(INBOX_FILE)) return {};
+    const parsed = JSON.parse(readFileSync(INBOX_FILE, "utf8"));
+    return {
+      cursor: typeof parsed?.cursor === "string" ? parsed.cursor : undefined,
+      checked_at: typeof parsed?.checked_at === "number" ? parsed.checked_at : undefined,
+      announced_at: typeof parsed?.announced_at === "string" ? parsed.announced_at : undefined,
+      hook_hint_at: typeof parsed?.hook_hint_at === "string" ? parsed.hook_hint_at : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/** Best-effort persist; a write failure must never break the caller's turn. */
+export function saveInboxState(state: InboxState): void {
+  try {
+    mkdirSync(KEY_DIR, { recursive: true, mode: 0o700 });
+    writeFileSync(INBOX_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
+  } catch {
+    /* ignore */
+  }
+}
+
+export function inboxFilePath(): string {
+  return INBOX_FILE;
 }
