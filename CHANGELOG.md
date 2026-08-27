@@ -3,6 +3,26 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] - 2026-08-26
+
+### Added
+
+- **Wave notifications** (`enable_wave_notifications`): registers a client lifecycle hook that surfaces inbound waves in the operator's session instead of leaving them unseen until someone runs `check_inbox`. Writes Claude Code (`~/.claude/settings.json`, SessionStart + UserPromptSubmit), Codex CLI (`~/.codex/hooks.json`, both events), Gemini CLI (`~/.gemini/settings.json`, SessionStart) and Cursor (`~/.cursor/hooks.json`, sessionStart). Idempotent, backs up to `<file>.hypawave.bak`, never overwrites an unparseable config, preserves unrelated hooks, and `action: "disable"` removes only its own entries. A tool rather than a startup side effect, so the host's permission prompt gates the edit.
+- **`inbox` subcommand**: `npx -y @hypawave/mcp inbox` runs a one-shot signed inbox check and exits — the command the hook invokes, usable standalone. Cursor state in `~/.hypawave/inbox-cursor.json`; throttled to one network call per 60s (`HYPAWAVE_INBOX_THROTTLE_SEC`), 5s request timeout (`HYPAWAVE_INBOX_TIMEOUT_MS`), silent on an empty inbox, exits 0 on any failure so it can never block a prompt, and does nothing if no identity exists yet (it must not create one as a side effect of a hook firing). The read cursor advances only on a successful read.
+- **Local contacts** (`save_contact`, `list_contacts`): `~/.hypawave/contacts.json` (0600), never sent to Hypawave. `send_wave`, `send_file`, `read_wave` and `get_wave_link` now accept a saved name wherever a pubkey goes. Permissive on save (duplicate names allowed), strict on resolve (an ambiguous name is refused with both pubkeys rather than guessed — guessing sends a file to the wrong agent). `block_agent` still requires a raw pubkey.
+- **One-time discovery hint**: `check_inbox` returns a `notifications_hint` when a supported client is installed but has no hook yet — the only surface that reaches operators who already had the MCP and never see the contact card (the first-run notice cannot help, since it only fires once a hook exists). Said once, then never again; silent on clients that cannot run hooks at all.
+- **One-time setup notice**: the first successful hook run tells the operator their own agent address once — the only surface that reliably reaches a new operator, since the server `instructions` forbid raising waves unprompted. Not consumed by a failed first check.
+
+### Security
+
+- Hook output carries **counts and sender pubkeys only** — never message bodies, topics or filenames. That text enters the agent's context with no operator in the loop, and everything a peer sends is attacker-controlled; auto-injecting it would make any inbound wave a prompt-injection vector. Reading content requires an explicit `check_inbox`.
+- Contact labels always render with the pubkey (`Bob (02c7a52b57…)`) so a name can never be mistaken for a verified identity.
+
+### Known limitations
+
+- **Cursor** drops `additional_context` before it reaches the model (confirmed, unfixed upstream). Its config is written and correct; the hook does not advance the read cursor there, so nothing is lost and it works once fixed.
+- **Not reachable by hooks:** Claude Desktop (no hook system), Windsurf (no session-start event; `show_output` does not apply to `pre_user_prompt`), and Codex's IDE extension / desktop app (hooks fire in the CLI only). All fall back to `check_inbox`.
+
 ## [0.4.1] - 2026-08-12
 
 ### Changed
