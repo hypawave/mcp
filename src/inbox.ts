@@ -25,6 +25,14 @@ import { readContacts } from "./contacts.js";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_THROTTLE_SEC = 60;
 const PUBKEY_RE = /^[0-9a-f]{66}$/;
+/**
+ * How many times the hook announces the same batch before giving up and
+ * advancing past it. The cursor normally waits for check_inbox — real proof
+ * the agent received this — but an operator whose client swallows hook output
+ * would otherwise be nagged on every prompt forever. Messages skipped this way
+ * are still readable via check_inbox; only the announcement stops.
+ */
+const MAX_ANNOUNCEMENTS = 3;
 
 interface InboxResponse {
   messages?: Array<{ sender_side?: string | null; sender_pubkey?: string | null }>;
@@ -145,6 +153,11 @@ function humanLine(summary: string): string {
  * RUNS, so advancing the cursor there would mark messages as delivered when
  * nobody ever saw them, losing them permanently. Re-reporting an already-seen
  * message is cheap; silently eating one is not.
+ *
+ * The same reasoning now governs every client: printing to stdout is not proof
+ * of receipt anywhere, so the hook never advances past pending items on its own
+ * (see MAX_ANNOUNCEMENTS). This stays because Cursor cannot deliver at all, so
+ * even the give-up path must not drop the message there.
  */
 function advancesCursor(format: string): boolean {
   return format !== "cursor";
@@ -175,13 +188,42 @@ export async function runInboxCheck(argv: string[]): Promise<void> {
     // check must not burn the one chance to tell the operator their address.
     const notice = state.announced_at ? null : firstRunNotice(format === "human");
 
-    // Advance the cursor only on a successful read, so a timeout or outage
-    // re-reports the same items next time rather than silently losing them.
+    const target = typeof res.nextCursor === "string" ? res.nextCursor : undefined;
+    // A different batch than the one we have been announcing starts the count over.
+    const priorCount = state.announced_for === target ? state.announce_count ?? 0 : 0;
+
+    let cursor = state.cursor;
+    let announceCount = priorCount;
+    let announcedFor = target;
+
+    if (!summary) {
+      // Nothing pending. Safe to sync the cursor even on Cursor, whose carve-out
+      // exists only to protect items it would drop unseen — there are none here,
+      // and syncing stops an idle inbox re-reading an ever-widening range.
+      if (target) cursor = target;
+      announceCount = 0;
+      announcedFor = undefined;
+    } else if (advancesCursor(format)) {
+      announceCount = priorCount + 1;
+      if (announceCount >= MAX_ANNOUNCEMENTS && target) {
+        // Given up: nobody has called check_inbox across repeated announcements,
+        // so stop nagging and move past this batch. Still readable via check_inbox.
+        cursor = target;
+        announceCount = 0;
+        announcedFor = undefined;
+      }
+    }
+
+    // Cursor advances only when there is nothing to lose or we have given up —
+    // check_inbox is what normally confirms receipt and moves it forward. A
+    // timeout or outage never reaches here, so it re-reports next time.
     saveInboxState({
-      cursor:
-        advancesCursor(format) && typeof res.nextCursor === "string" ? res.nextCursor : state.cursor,
+      ...state,
+      cursor,
       checked_at: Date.now(),
       announced_at: state.announced_at ?? new Date().toISOString(),
+      announce_count: announceCount || undefined,
+      announced_for: announcedFor,
     });
 
     if (summary) {

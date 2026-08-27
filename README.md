@@ -13,7 +13,15 @@ Works with any MCP-capable agent: Claude Code, Claude Desktop, Codex, Cursor, Ge
 
 The server command is the same everywhere: `npx -y @hypawave/mcp`. Only the config file differs per client.
 
-**Claude Code** — `.mcp.json` in your project (or `claude mcp add hypawave -- npx -y @hypawave/mcp`):
+Fastest path — **register at user scope**, so the tools exist in every project on the machine:
+
+```bash
+claude mcp add hypawave -s user -- npx -y @hypawave/mcp
+```
+
+Scope matters more than it looks. Notification hooks are global, so a server registered to a single project means the hook fires in projects where `check_inbox` does not exist and the agent is told to call a tool it does not have. `enable_wave_notifications` registers the server at user scope for you — but it is itself a tool on this server, so the first registration has to be the command above. After that, one call propagates it to every other client on the machine.
+
+**Claude Code** — user scope lives in `~/.claude.json`. Per-project instead, `.mcp.json` in your project (or `claude mcp add hypawave -- npx -y @hypawave/mcp`):
 
 ```json
 {
@@ -130,18 +138,22 @@ enable_wave_notifications {}                  → detects installed clients, wri
 enable_wave_notifications { action: "status" } → report without writing
 ```
 
-| Client | Config written | Fires | Reaches |
-|---|---|---|---|
-| Claude Code | `~/.claude/settings.json` | SessionStart + UserPromptSubmit | agent |
-| Codex **CLI** | `~/.codex/hooks.json` | SessionStart + UserPromptSubmit | agent |
-| Gemini CLI | `~/.gemini/settings.json` | SessionStart | agent |
-| Cursor | `~/.cursor/hooks.json` | sessionStart | nothing yet — see below |
+| Client | Hook written | Server registered | Fires | Reaches |
+|---|---|---|---|---|
+| Claude Code | `~/.claude/settings.json` | `~/.claude.json` | SessionStart + UserPromptSubmit | agent |
+| Codex **CLI** | `~/.codex/hooks.json` | `~/.codex/config.toml` | SessionStart + UserPromptSubmit | agent |
+| Gemini CLI | `~/.gemini/settings.json` | same file | SessionStart | agent |
+| Cursor | `~/.cursor/hooks.json` | `~/.cursor/mcp.json` | sessionStart | nothing yet — see below |
+
+The hook tells the agent to call `check_inbox`, which only exists where this server is registered — so both are written together, the server at **user scope**, covering every project the hook can fire in. Codex is TOML and gets a marker-delimited block that leaves the rest of the file untouched; a hand-written `[mcp_servers.hypawave]` is left alone rather than duplicated.
 
 Not reachable by hooks: **Claude Desktop** (no hook system), **Windsurf** (no session-start event, and `show_output` does not apply to `pre_user_prompt`), and **Codex's IDE extension / desktop app** (hooks fire in the CLI only). Those fall back to `check_inbox`.
 
-Cursor's config is written and correct, but Cursor currently drops `additional_context` before it reaches the model — a confirmed, unfixed bug on their side. The hook therefore does **not** advance the read cursor there, so nothing is lost and it starts working the day they fix it.
+Cursor's config is written and correct, but Cursor currently drops `additional_context` before it reaches the model — a confirmed, unfixed bug on their side. Nothing is lost there and it starts working the day they fix it.
 
-**What it writes and why you can trust it.** It never overwrites a config it cannot parse, backs up to `<file>.hypawave.bak` first, is idempotent, preserves unrelated hooks, and `action: "disable"` removes only its own entries. It is a tool rather than something the server does on startup, so your client's permission prompt gates the edit.
+**Delivery is at-least-once.** Printing to stdout is not proof anyone read it: a client can swallow hook output, and the operator may never see the line. So the hook does **not** advance the read cursor past pending items — `check_inbox` does, because that call means the agent has the content in hand. Until then the same batch is re-announced (at most once per throttle window). After three unconfirmed announcements the hook gives up and moves past the batch rather than nagging forever; those messages stay readable via `check_inbox`, only the announcement stops. Cursor never gives up, since it cannot deliver at all — there the batch waits for an explicit `check_inbox`.
+
+**What it writes and why you can trust it.** It never overwrites a config it cannot parse, backs up to `<file>.hypawave.bak` first, is idempotent, preserves unrelated hooks and servers, and `action: "disable"` removes only its own entries. The server is registered only after the hook write succeeds, so a failure cannot leave the pair half-installed. It is a tool rather than something the server does on startup, so your client's permission prompt gates the edit.
 
 **How anyone finds out any of this.** Nothing announces itself at startup, and the server `instructions` tell the agent never to raise waves unprompted — right for a commerce tool, wrong for an entry point. So `check_inbox` carries at most **one** one-time nudge per reply, in dependency order:
 

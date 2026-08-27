@@ -69,7 +69,7 @@ describe("runInboxCheck", () => {
     expect(existsSync(join(home, ".hypawave", "identity.json"))).toBe(false);
   });
 
-  it("prints a summary and persists the cursor", async () => {
+  it("prints a summary but holds the cursor until receipt is confirmed", async () => {
     seedIdentity();
     mockFetch.mockResolvedValue(
       jsonResponse({
@@ -84,7 +84,11 @@ describe("runInboxCheck", () => {
     expect(writes.join("")).toContain("2 new wave messages and 1 file transfer waiting");
     expect(writes.join("")).toContain("02c7a52b57…");
     expect(writes.join("")).toContain("03f66a38f6…");
-    expect(config.readInboxState().cursor).toBe("2026-08-09T20:09:12Z|abc");
+    // Printing is not proof of receipt — check_inbox advances the cursor.
+    const state = config.readInboxState();
+    expect(state.cursor).toBeUndefined();
+    expect(state.announce_count).toBe(1);
+    expect(state.announced_for).toBe("2026-08-09T20:09:12Z|abc");
   });
 
   it("sends the stored cursor as ?since and signs the request", async () => {
@@ -257,5 +261,119 @@ describe("runInboxCheck", () => {
     );
     await inbox.runInboxCheck(["--force"]);
     expect(writes.join("")).toContain(", and 1 other agent(s)");
+  });
+});
+
+describe("at-least-once delivery", () => {
+  /** Fresh Response per call — a Response body can only be read once. */
+  const pending = (nextCursor = "C1") =>
+    mockFetch.mockImplementation(async () =>
+      jsonResponse({ messages: [{ sender_side: PEER_A }], pending_transfers: [], nextCursor })
+    );
+
+  it("re-announces the same batch while check_inbox has not confirmed it", async () => {
+    seedIdentity();
+    pending();
+
+    await inbox.runInboxCheck(["--force"]);
+    await inbox.runInboxCheck(["--force"]);
+
+    expect(writes.join("").match(/1 new wave message/g)).toHaveLength(2);
+    expect(config.readInboxState().cursor).toBeUndefined();
+    expect(config.readInboxState().announce_count).toBe(2);
+  });
+
+  it("gives up after MAX_ANNOUNCEMENTS so it cannot nag forever", async () => {
+    seedIdentity();
+    pending();
+
+    for (let i = 0; i < 3; i++) await inbox.runInboxCheck(["--force"]);
+
+    const state = config.readInboxState();
+    expect(state.cursor).toBe("C1");
+    expect(state.announce_count).toBeUndefined();
+    expect(state.announced_for).toBeUndefined();
+
+    // Past it now — a further run has nothing to say.
+    writes.length = 0;
+    mockFetch.mockImplementation(async () => jsonResponse({ messages: [], pending_transfers: [] }));
+    await inbox.runInboxCheck(["--force"]);
+    expect(writes.join("")).toBe("");
+  });
+
+  it("restarts the count when a different batch arrives", async () => {
+    seedIdentity();
+    pending("C1");
+    await inbox.runInboxCheck(["--force"]);
+    await inbox.runInboxCheck(["--force"]);
+    expect(config.readInboxState().announce_count).toBe(2);
+
+    pending("C2");
+    await inbox.runInboxCheck(["--force"]);
+
+    const state = config.readInboxState();
+    expect(state.announce_count).toBe(1);
+    expect(state.announced_for).toBe("C2");
+    expect(state.cursor).toBeUndefined();
+  });
+
+  it("syncs the cursor freely when nothing is pending", async () => {
+    seedIdentity();
+    mockFetch.mockImplementation(async () =>
+      jsonResponse({ messages: [], pending_transfers: [], nextCursor: "C9" })
+    );
+
+    await inbox.runInboxCheck(["--force"]);
+
+    expect(config.readInboxState().cursor).toBe("C9");
+    expect(writes.join("")).toBe("");
+  });
+
+  it("never advances for Cursor, even on the give-up path", async () => {
+    seedIdentity();
+    pending();
+
+    for (let i = 0; i < 4; i++) await inbox.runInboxCheck(["--force", "--format=cursor"]);
+
+    // Cursor drops the context entirely, so giving up would lose the message.
+    expect(config.readInboxState().cursor).toBeUndefined();
+    expect(config.readInboxState().announce_count).toBeUndefined();
+  });
+
+  it("preserves unrelated state across hook runs", async () => {
+    seedIdentity();
+    config.saveInboxState({ link_offered: [PEER_B], hook_hint_at: "2026-01-01T00:00:00Z" });
+    pending();
+
+    await inbox.runInboxCheck(["--force"]);
+
+    const state = config.readInboxState();
+    expect(state.link_offered).toEqual([PEER_B]);
+    expect(state.hook_hint_at).toBe("2026-01-01T00:00:00Z");
+  });
+});
+
+describe("Cursor cursor-sync carve-out", () => {
+  it("syncs on an empty inbox — the carve-out only protects unseen items", async () => {
+    seedIdentity();
+    mockFetch.mockImplementation(async () =>
+      jsonResponse({ messages: [], pending_transfers: [], nextCursor: "C9" })
+    );
+
+    await inbox.runInboxCheck(["--force", "--format=cursor"]);
+
+    expect(config.readInboxState().cursor).toBe("C9");
+    expect(writes.join("")).toBe("");
+  });
+
+  it("still holds when items are pending", async () => {
+    seedIdentity();
+    mockFetch.mockImplementation(async () =>
+      jsonResponse({ messages: [{ sender_side: PEER_A }], pending_transfers: [], nextCursor: "C1" })
+    );
+
+    for (let i = 0; i < 4; i++) await inbox.runInboxCheck(["--force", "--format=cursor"]);
+
+    expect(config.readInboxState().cursor).toBeUndefined();
   });
 });

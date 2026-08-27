@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] - 2026-08-27
+
+### Added
+
+- **`enable_wave_notifications` registers this server at user scope**, alongside every hook it writes (`~/.claude.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`, `~/.gemini/settings.json`). The hook is global but MCP servers are registered per project in most clients, so a hook firing in a project without the server told the agent to call a `check_inbox` it did not have — and because the cursor advanced on read, nothing re-announced it. Announcement and the ability to act on it now travel together. Codex has no JSON config, so its TOML gets a marker-delimited block; a hand-written `[mcp_servers.hypawave]` is skipped rather than duplicated, which would make the file unparseable. The server is written only after the hook succeeds, so a failure cannot half-install the pair.
+
+### Changed
+
+- **Wave notifications are at-least-once instead of at-most-once.** The hook no longer advances the read cursor past pending items: printing to stdout is not proof anyone read it, and a client that swallows hook output silently consumed the only announcement a message ever got. `check_inbox` now advances the cursor, because that call means the agent has the content. Unconfirmed batches are re-announced (bounded by the existing 60s throttle) and abandoned after three tries, so a client that never delivers cannot nag forever — those messages remain readable via `check_inbox`. This generalises the reasoning already applied to Cursor to every client; Cursor still never gives up, since it cannot deliver at all.
+- **An empty inbox syncs the cursor on every client, Cursor included.** Its carve-out exists to protect items that would be dropped unseen, and there are none — holding the cursor only widened the `since` range on every idle check.
+
+### Fixed
+
+- **The hook no longer wipes unrelated inbox state.** Its `saveInboxState` rebuilt the object from three fields, silently dropping `link_offered` and `hook_hint_at` on every run — so a peer's watch link could be offered again after having been offered once.
+
 ## [0.5.2] - 2026-08-27
 
 ### Added

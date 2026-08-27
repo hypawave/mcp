@@ -137,6 +137,15 @@ export interface InboxState {
   hook_hint_at?: string;
   /** Peers whose watch link has already been offered to the operator — once each. */
   link_offered?: string[];
+  /**
+   * Hook announcements made for `announced_for` that check_inbox has not yet
+   * confirmed. Printing to stdout is no proof anyone read it, so the cursor
+   * waits for an explicit check_inbox call; this counter is the safety valve
+   * that stops the hook nagging forever when nobody ever makes one.
+   */
+  announce_count?: number;
+  /** The nextCursor the pending announcements are about — a new batch resets the count. */
+  announced_for?: string;
 }
 
 /**
@@ -162,6 +171,11 @@ export function readInboxState(): InboxState {
       link_offered: Array.isArray(parsed?.link_offered)
         ? parsed.link_offered.filter((p: unknown) => typeof p === "string")
         : undefined,
+      announce_count:
+        typeof parsed?.announce_count === "number" && parsed.announce_count >= 0
+          ? parsed.announce_count
+          : undefined,
+      announced_for: typeof parsed?.announced_for === "string" ? parsed.announced_for : undefined,
     };
   } catch {
     return {};

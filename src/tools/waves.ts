@@ -195,6 +195,21 @@ export function registerWaveTools(server: McpServer) {
     async ({ since }) => {
       const res = await hw<Record<string, unknown>>("/api/waves/messages", { query: { since }, signed: true });
 
+      // This call IS the proof of receipt the notification hook waits for: the
+      // agent has the content in hand, so it is finally safe to advance the
+      // cursor and clear the hook's pending-announcement count. The hook itself
+      // never advances past unseen items, because printing to stdout does not
+      // mean anyone read it. Best-effort — a state write must not fail the read.
+      if (typeof res.nextCursor === "string") {
+        const state = readInboxState();
+        saveInboxState({
+          ...state,
+          cursor: res.nextCursor,
+          announce_count: undefined,
+          announced_for: undefined,
+        });
+      }
+
       // At most ONE nudge per reply, in dependency order: an address (nothing
       // works without it), then notifications, then the watch link. Stacking
       // them makes an agent read like a sales pitch, and each is once-only so

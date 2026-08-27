@@ -234,3 +234,116 @@ describe("consumeNotificationHint", () => {
     expect(hint()).toContain("enable_wave_notifications");
   });
 });
+
+describe("MCP server registration travels with the hook", () => {
+  const claudeJson = () => join(home, ".claude.json");
+  const codexToml = () => join(home, ".codex", "config.toml");
+  const cursorMcp = () => join(home, ".cursor", "mcp.json");
+  const geminiSettings = () => join(home, ".gemini", "settings.json");
+
+  it("registers Claude Code at user scope in ~/.claude.json, not settings.json", async () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const out = payload(await call({ action: "enable", client: "auto" }));
+
+    expect(out.results[0].server).toMatchObject({ status: "enabled" });
+    expect(readJson(claudeJson()).mcpServers.hypawave).toEqual({
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@hypawave/mcp"],
+    });
+    // The hook file must not gain a server block.
+    expect(readJson(claudeSettings()).mcpServers).toBeUndefined();
+  });
+
+  it("preserves unrelated keys in ~/.claude.json", async () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(claudeJson(), JSON.stringify({ projects: { "/x": { mcpServers: {} } } }));
+    await call({ action: "enable", client: "auto" });
+
+    const cfg = readJson(claudeJson());
+    expect(cfg.projects["/x"]).toBeDefined();
+    expect(cfg.mcpServers.hypawave).toBeDefined();
+  });
+
+  it("appends a marker-delimited TOML block for Codex without touching existing config", async () => {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(codexToml(), 'model = "gpt-5"\n\n[mcp_servers.other]\ncommand = "foo"\n');
+    const out = payload(await call({ action: "enable", client: "auto" }));
+
+    expect(out.results[0].server).toMatchObject({ status: "enabled" });
+    const raw = readFileSync(codexToml(), "utf8");
+    expect(raw).toContain('model = "gpt-5"');
+    expect(raw).toContain("[mcp_servers.other]");
+    expect(raw).toContain("[mcp_servers.hypawave]");
+    expect(raw).toContain('args = ["-y", "@hypawave/mcp"]');
+  });
+
+  it("is idempotent for Codex — enabling twice leaves one block", async () => {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    await call({ action: "enable", client: "auto" });
+    await call({ action: "enable", client: "auto" });
+
+    const raw = readFileSync(codexToml(), "utf8");
+    expect(raw.match(/\[mcp_servers\.hypawave\]/g)).toHaveLength(1);
+  });
+
+  it("skips a hand-written Codex entry rather than duplicating the key", async () => {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(codexToml(), '[mcp_servers.hypawave]\ncommand = "mine"\n');
+    const out = payload(await call({ action: "enable", client: "auto" }));
+
+    expect(out.results[0].server).toMatchObject({ status: "skipped" });
+    const raw = readFileSync(codexToml(), "utf8");
+    expect(raw.match(/\[mcp_servers\.hypawave\]/g)).toHaveLength(1);
+    expect(raw).toContain('command = "mine"');
+  });
+
+  it("removes the Codex block on disable", async () => {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(codexToml(), 'model = "gpt-5"\n');
+    await call({ action: "enable", client: "auto" });
+    await call({ action: "disable", client: "auto" });
+
+    const raw = readFileSync(codexToml(), "utf8");
+    expect(raw).not.toContain("[mcp_servers.hypawave]");
+    expect(raw).toContain('model = "gpt-5"');
+  });
+
+  it("registers Cursor in mcp.json, separate from hooks.json", async () => {
+    mkdirSync(join(home, ".cursor"), { recursive: true });
+    await call({ action: "enable", client: "auto" });
+
+    expect(readJson(cursorMcp()).mcpServers.hypawave).toMatchObject({ command: "npx" });
+    expect(readJson(cursorHooks()).mcpServers).toBeUndefined();
+  });
+
+  it("writes hook and server into one file for Gemini without clobbering either", async () => {
+    mkdirSync(join(home, ".gemini"), { recursive: true });
+    await call({ action: "enable", client: "auto" });
+
+    const cfg = readJson(geminiSettings());
+    expect(cfg.hooks.SessionStart[0].hooks[0].command).toContain("--format=gemini");
+    expect(cfg.mcpServers.hypawave).toMatchObject({ command: "npx" });
+  });
+
+  it("disable removes the server everywhere it was written", async () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    mkdirSync(join(home, ".gemini"), { recursive: true });
+    await call({ action: "enable", client: "auto" });
+    await call({ action: "disable", client: "auto" });
+
+    expect(readJson(claudeJson()).mcpServers).toBeUndefined();
+    expect(readJson(geminiSettings()).mcpServers).toBeUndefined();
+  });
+
+  it("status reports server state without writing anything", async () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const before = payload(await call({ action: "status", client: "auto" }));
+    expect(before.results[0].server).toMatchObject({ status: "not_enabled" });
+    expect(existsSync(claudeJson())).toBe(false);
+
+    await call({ action: "enable", client: "auto" });
+    const after = payload(await call({ action: "status", client: "auto" }));
+    expect(after.results[0].server).toMatchObject({ status: "enabled" });
+  });
+});

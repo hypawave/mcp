@@ -25,6 +25,20 @@ const GEMINI_HOOK_COMMAND = `${HOOK_COMMAND} --format=gemini`;
 const HOOK_MARKER = "@hypawave/mcp inbox";
 const HOOK_TIMEOUT_SEC = 10;
 
+// The hook tells the agent to call check_inbox. That tool only exists where
+// this MCP server is registered, and registration is per-project in most
+// clients — so a global hook plus a project-scoped server means the agent gets
+// told to call a tool it does not have, and (because the inbox cursor advances
+// on read) nothing re-announces it. Register the server at USER scope wherever
+// we install the hook, so the announcement and the ability to act on it always
+// travel together.
+const MCP_SERVER_NAME = "hypawave";
+const MCP_COMMAND = "npx";
+const MCP_ARGS = ["-y", "@hypawave/mcp"];
+/** Delimits our block in Codex's TOML, so we never touch anything outside it. */
+const TOML_BEGIN = "# >>> hypawave mcp (managed by enable_wave_notifications) >>>";
+const TOML_END = "# <<< hypawave mcp <<<";
+
 type ClientId = "claude-code" | "codex" | "cursor" | "gemini";
 
 interface Target {
@@ -34,6 +48,11 @@ interface Target {
   markerDir: string;
   configPath: string;
   events: string;
+  /** Where this client keeps USER-scope MCP server registrations. */
+  serverPath: string;
+  serverFormat: "json" | "toml";
+  /** Claude Code records an explicit transport; the others infer stdio. */
+  serverTyped?: boolean;
 }
 
 function targets(): Target[] {
@@ -45,6 +64,11 @@ function targets(): Target[] {
       markerDir: join(home, ".claude"),
       configPath: join(home, ".claude", "settings.json"),
       events: "SessionStart + UserPromptSubmit",
+      // Hooks and MCP servers live in different files here: settings.json holds
+      // the hook, ~/.claude.json holds user-scope `mcpServers`.
+      serverPath: join(home, ".claude.json"),
+      serverFormat: "json",
+      serverTyped: true,
     },
     {
       id: "codex",
@@ -52,12 +76,16 @@ function targets(): Target[] {
       markerDir: join(home, ".codex"),
       configPath: join(home, ".codex", "hooks.json"),
       events: "SessionStart + UserPromptSubmit",
+      serverPath: join(home, ".codex", "config.toml"),
+      serverFormat: "toml",
     },
     {
       id: "cursor",
       label: "Cursor",
       markerDir: join(home, ".cursor"),
       configPath: join(home, ".cursor", "hooks.json"),
+      serverPath: join(home, ".cursor", "mcp.json"),
+      serverFormat: "json",
       events:
         "sessionStart only (beforeSubmitPrompt cannot inject context). NOTE: Cursor currently drops " +
         "additional_context before it reaches the model — a confirmed, unfixed bug on their side, so this " +
@@ -69,6 +97,9 @@ function targets(): Target[] {
       markerDir: join(home, ".gemini"),
       configPath: join(home, ".gemini", "settings.json"),
       events: "SessionStart only (requires a recent build — context injection was added late)",
+      // Only client where the hook and the server share one file.
+      serverPath: join(home, ".gemini", "settings.json"),
+      serverFormat: "json",
     },
   ];
 }
@@ -148,6 +179,127 @@ function applyCursorShape(cfg: any, enable: boolean): void {
   if (Object.keys(cfg.hooks).length === 0) delete cfg.hooks;
 }
 
+function readText(path: string): string {
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+function writeText(path: string, text: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  if (existsSync(path)) copyFileSync(path, `${path}.hypawave.bak`);
+  writeFileSync(path, text.endsWith("\n") ? text : `${text}\n`);
+}
+
+function serverEntry(typed: boolean): Record<string, unknown> {
+  const entry: Record<string, unknown> = { command: MCP_COMMAND, args: [...MCP_ARGS] };
+  return typed ? { type: "stdio", ...entry } : entry;
+}
+
+/** JSON clients all key user-scope servers off a top-level `mcpServers` map. */
+function applyServerJson(cfg: any, enable: boolean, typed: boolean): void {
+  if (enable) {
+    cfg.mcpServers ??= {};
+    cfg.mcpServers[MCP_SERVER_NAME] = serverEntry(typed);
+    return;
+  }
+  if (cfg.mcpServers && typeof cfg.mcpServers === "object") {
+    delete cfg.mcpServers[MCP_SERVER_NAME];
+    if (Object.keys(cfg.mcpServers).length === 0) delete cfg.mcpServers;
+  }
+}
+
+function serverInstalledJson(cfg: any): boolean {
+  const entry = cfg?.mcpServers?.[MCP_SERVER_NAME];
+  return !!entry && typeof entry === "object";
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripTomlBlock(raw: string): string {
+  const re = new RegExp(`\\n?${escapeRe(TOML_BEGIN)}[\\s\\S]*?${escapeRe(TOML_END)}\\n?`, "g");
+  return raw.replace(re, "\n");
+}
+
+function tomlHasOurBlock(raw: string): boolean {
+  return raw.includes(TOML_BEGIN);
+}
+
+/**
+ * A hand-written [mcp_servers.hypawave] outside our markers. Appending ours
+ * would duplicate the key and make the whole file unparseable, so we skip
+ * instead — the operator already has what they need.
+ */
+function tomlHasForeignServer(raw: string): boolean {
+  const re = new RegExp(`^\\s*\\[mcp_servers\\.${escapeRe(MCP_SERVER_NAME)}\\]`, "m");
+  return re.test(stripTomlBlock(raw));
+}
+
+/**
+ * Codex uses TOML, and we have no TOML parser. Marker-delimited append keeps
+ * this honest: we only ever add or remove text between our own markers and
+ * never rewrite the operator's config.
+ */
+function applyServerToml(raw: string, enable: boolean): string {
+  const stripped = stripTomlBlock(raw).replace(/\n{3,}/g, "\n\n");
+  if (!enable) return stripped.trimEnd();
+
+  const args = MCP_ARGS.map((a) => JSON.stringify(a)).join(", ");
+  const block =
+    `${TOML_BEGIN}\n` +
+    `[mcp_servers.${MCP_SERVER_NAME}]\n` +
+    `command = ${JSON.stringify(MCP_COMMAND)}\n` +
+    `args = [${args}]\n` +
+    TOML_END;
+
+  const base = stripped.trimEnd();
+  return base.length > 0 ? `${base}\n\n${block}` : block;
+}
+
+type ServerResult = { config: string; status: string; reason?: string };
+
+/**
+ * Register (or remove) the MCP server in its own file. Gemini is handled by the
+ * caller instead, because there the server shares a file with the hook and two
+ * read-modify-write passes would clobber each other.
+ */
+function handleServer(t: Target, action: "enable" | "disable" | "status"): ServerResult {
+  const path = t.serverPath;
+
+  if (t.serverFormat === "toml") {
+    const raw = readText(path);
+    if (action === "status") {
+      return { config: path, status: tomlHasOurBlock(raw) ? "enabled" : "not_enabled" };
+    }
+    if (action === "enable" && tomlHasForeignServer(raw)) {
+      return {
+        config: path,
+        status: "skipped",
+        reason: `[mcp_servers.${MCP_SERVER_NAME}] is already defined by hand — left untouched`,
+      };
+    }
+    try {
+      writeText(path, applyServerToml(raw, action === "enable"));
+    } catch (e: any) {
+      return { config: path, status: "failed", reason: e?.message || String(e) };
+    }
+    return { config: path, status: action === "enable" ? "enabled" : "disabled" };
+  }
+
+  const read = readConfig(path);
+  if (read.ok !== true) return { config: path, status: "skipped", reason: read.reason };
+  if (action === "status") {
+    return { config: path, status: serverInstalledJson(read.data) ? "enabled" : "not_enabled" };
+  }
+  applyServerJson(read.data, action === "enable", !!t.serverTyped);
+  try {
+    writeConfig(path, read.data);
+  } catch (e: any) {
+    return { config: path, status: "failed", reason: e?.message || String(e) };
+  }
+  return { config: path, status: action === "enable" ? "enabled" : "disabled" };
+}
+
 function hookInstalled(cfg: any, target: Target): boolean {
   const hooks = cfg?.hooks;
   if (!hooks || typeof hooks !== "object") return false;
@@ -213,10 +365,12 @@ export function registerNotificationTools(server: McpServer) {
       description:
         "Register (or remove) a lifecycle hook so new wave messages and pending file transfers are surfaced at " +
         "session start and on the operator's next prompt, instead of sitting unseen until someone runs check_inbox. " +
+        "Also registers this MCP server at USER scope for the same clients, so check_inbox exists in every project " +
+        "the hook fires in — without that the hook tells the agent to call a tool it does not have. " +
         "Use when your operator asks to be notified about incoming agent messages. This EDITS their client config " +
-        "(Claude Code settings.json, Codex/Cursor hooks.json) — ask them first, report exactly what changed, and " +
-        "note that a backup is written alongside. Run with action='status' to report the current state without " +
-        "writing anything.",
+        "(Claude Code settings.json + ~/.claude.json, Codex hooks.json + config.toml, Cursor hooks.json + mcp.json, " +
+        "Gemini settings.json) — ask them first, report exactly what changed, and note that a backup is written " +
+        "alongside each file. Run with action='status' to report the current state without writing anything.",
       inputSchema: {
         action: z.enum(["enable", "disable", "status"]).default("enable"),
         client: z
@@ -241,6 +395,9 @@ export function registerNotificationTools(server: McpServer) {
       }
 
       const results = selected.map((t) => {
+        // Gemini keeps the hook and the server in one file, so both edits must
+        // ride on a single read-modify-write.
+        const sharedFile = t.serverPath === t.configPath;
         const read = readConfig(t.configPath);
         if (read.ok !== true) {
           return { client: t.label, config: t.configPath, status: "skipped", reason: read.reason };
@@ -253,6 +410,12 @@ export function registerNotificationTools(server: McpServer) {
             config: t.configPath,
             status: hookInstalled(cfg, t) ? "enabled" : "not_enabled",
             events: t.events,
+            server: sharedFile
+              ? {
+                  config: t.serverPath,
+                  status: serverInstalledJson(cfg) ? "enabled" : "not_enabled",
+                }
+              : handleServer(t, action),
           };
         }
 
@@ -265,17 +428,26 @@ export function registerNotificationTools(server: McpServer) {
         } else {
           applyNestedShape(cfg, ["SessionStart", "UserPromptSubmit"], enable, HOOK_COMMAND, HOOK_TIMEOUT_SEC);
         }
+        if (sharedFile) applyServerJson(cfg, enable, !!t.serverTyped);
 
         try {
           writeConfig(t.configPath, cfg);
         } catch (e: any) {
           return { client: t.label, config: t.configPath, status: "failed", reason: e?.message || String(e) };
         }
+
+        // Only after the hook landed — registering a server for a hook that
+        // failed to write would leave the pair half-installed.
+        const server: ServerResult = sharedFile
+          ? { config: t.serverPath, status: enable ? "enabled" : "disabled" }
+          : handleServer(t, action);
+
         return {
           client: t.label,
           config: t.configPath,
           status: enable ? "enabled" : "disabled",
           events: enable ? t.events : undefined,
+          server,
           backup: existsSync(`${t.configPath}.hypawave.bak`) ? `${t.configPath}.hypawave.bak` : undefined,
         };
       });
@@ -283,11 +455,14 @@ export function registerNotificationTools(server: McpServer) {
       return jsonResult({
         action,
         command: HOOK_COMMAND,
+        server: { name: MCP_SERVER_NAME, command: MCP_COMMAND, args: MCP_ARGS },
         results,
         note:
           action === "enable"
             ? "Takes effect in NEW sessions — the operator must restart their client. Notifications carry counts and " +
-              "sender pubkeys only; call check_inbox to read the actual messages."
+              "sender pubkeys only; call check_inbox to read the actual messages. The server is registered at user " +
+              "scope, so check_inbox is available in every project on this machine, but it does not follow the " +
+              "operator to another machine — re-run there."
             : undefined,
         unsupported:
           action === "status" || client !== "auto"
