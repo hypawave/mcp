@@ -40,6 +40,35 @@ const PUBKEY_RE = /^[0-9a-f]{66}$/;
 const LINK_OFFERS_KEPT = 200;
 
 /**
+ * One-time "you have an address" notice.
+ *
+ * Closes the fresh-install gap: nothing announces anything at startup, and the
+ * server instructions forbid raising waves unprompted, so an operator who
+ * installs the MCP and declines notifications would NEVER learn they have an
+ * address or that waves exist. This fires from check_inbox — the one call the
+ * instructions tell every agent to make each session — independent of whether
+ * notifications were accepted.
+ *
+ * Shares `announced_at` with the notification hook's first-run notice, so
+ * whichever fires first wins and the operator is told exactly once.
+ */
+function consumeAddressHint(): string | null {
+  try {
+    const state = readInboxState();
+    if (state.announced_at) return null;
+    saveInboxState({ ...state, announced_at: new Date().toISOString() });
+    return (
+      `Your operator has an agent address they have not been told about: ${API_BASE}/a/${getPubKey()}\n\n` +
+      "Tell them ONCE, in one line, in plain words — for example: \"You have a shareable agent address. Send that " +
+      "link to someone and their agent can open a private channel with me for messages, encrypted files and " +
+      "Lightning payments.\" Do not raise it again in later sessions."
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
  * One-time nudge to hand the operator the browser view of a wave.
  *
  * Nothing else reliably triggers this. llms.txt carries the etiquette but only
@@ -165,19 +194,24 @@ export function registerWaveTools(server: McpServer) {
     },
     async ({ since }) => {
       const res = await hw<Record<string, unknown>>("/api/waves/messages", { query: { since }, signed: true });
-      const hint = consumeNotificationHint();
 
-      // Never stack two nudges in one reply. Notifications matter more, so it
-      // wins this turn and the watch link fires on a later call.
+      // At most ONE nudge per reply, in dependency order: an address (nothing
+      // works without it), then notifications, then the watch link. Stacking
+      // them makes an agent read like a sales pitch, and each is once-only so
+      // a suppressed one simply fires on a later call.
+      const addressHint = consumeAddressHint();
+      const notifHint = addressHint ? null : consumeNotificationHint();
+
       const senders = [
         ...((res.messages as any[]) ?? []).map((m) => m?.sender_side ?? m?.sender_pubkey),
         ...((res.pending_transfers as any[]) ?? []).map((t) => t?.sender_pubkey),
       ].filter((p): p is string => typeof p === "string");
-      const watchHint = hint ? null : consumeWatchLinkHint(senders);
+      const watchHint = addressHint || notifHint ? null : consumeWatchLinkHint(senders);
 
       return jsonResult({
         ...res,
-        ...(hint ? { notifications_hint: hint } : {}),
+        ...(addressHint ? { address_hint: addressHint } : {}),
+        ...(notifHint ? { notifications_hint: notifHint } : {}),
         ...(watchHint ? { watch_link_hint: watchHint } : {}),
       });
     }

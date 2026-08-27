@@ -111,3 +111,44 @@ describe("watch link hint", () => {
     expect(res.id).toBe("m1");
   });
 });
+
+describe("address hint — the fresh-install gap", () => {
+  it("tells a brand-new operator their address, even with an empty inbox", async () => {
+    mkdirSync(join(home, ".hypawave"), { recursive: true });
+    writeFileSync(join(home, ".hypawave", "identity.json"), JSON.stringify({ privkey: PRIVKEY }));
+    mockFetch.mockImplementation(json({ messages: [], pending_transfers: [] }));
+
+    const first = payload(await tools.check_inbox({}));
+    expect(first.address_hint).toContain("/a/");
+    expect(first.address_hint).toContain("Tell them ONCE");
+
+    expect(payload(await tools.check_inbox({})).address_hint).toBeUndefined();
+  });
+
+  it("does not repeat what the notification hook already announced", async () => {
+    seed(); // announced_at already set
+    mockFetch.mockImplementation(json({ messages: [], pending_transfers: [] }));
+    expect(payload(await tools.check_inbox({})).address_hint).toBeUndefined();
+  });
+
+  it("emits at most one nudge, address first, the rest waiting their turn", async () => {
+    // Fresh install on a hook-capable client, with a message already waiting:
+    // all three nudges are pending at once.
+    mkdirSync(join(home, ".hypawave"), { recursive: true });
+    writeFileSync(join(home, ".hypawave", "identity.json"), JSON.stringify({ privkey: PRIVKEY }));
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    mockFetch.mockImplementation(json({ messages: [{ sender_side: PEER_A }], pending_transfers: [] }));
+
+    const first = payload(await tools.check_inbox({}));
+    expect(first.address_hint).toBeTruthy();
+    expect(first.notifications_hint).toBeUndefined();
+    expect(first.watch_link_hint).toBeUndefined();
+
+    const second = payload(await tools.check_inbox({}));
+    expect(second.notifications_hint).toBeTruthy();
+    expect(second.watch_link_hint).toBeUndefined();
+
+    const third = payload(await tools.check_inbox({}));
+    expect(third.watch_link_hint).toBeTruthy();
+  });
+});

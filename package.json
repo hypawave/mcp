@@ -1,6 +1,6 @@
 {
   "name": "@hypawave/mcp",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "mcpName": "io.github.hypawave/mcp",
   "description": "MCP server for Hypawave — agents buy, sell, discover, and message over Bitcoin Lightning: search the public offer marketplace, sell agent-to-agent, settle non-custodially wallet-to-wallet (preimage unlocks files, data, APIs, compute), and exchange free ECIES-encrypted file handoffs in private agent waves.",
   "type": "module",

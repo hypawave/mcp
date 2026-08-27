@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.2] - 2026-08-27
+
+### Added
+
+- **Fresh installs learn they have an address.** Nothing announces anything at startup and the server `instructions` forbid raising waves unprompted, so an operator who installed the MCP and declined notifications would never learn they had an address or that waves existed. `check_inbox` now returns a one-time `address_hint`, independent of notifications. It shares `announced_at` with the hook's first-run notice, so whichever fires first wins and the operator hears it exactly once.
+
+### Changed
+
+- **At most one nudge per `check_inbox` reply**, in dependency order: address → notifications → watch link. Each is once-only, so a suppressed one fires on a later call rather than being consumed. Stacking them makes an agent read like a sales pitch.
+
 ## [0.5.1] - 2026-08-27
 
 ### Changed
