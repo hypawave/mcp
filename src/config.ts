@@ -135,6 +135,8 @@ export interface InboxState {
   announced_at?: string;
   /** Set once check_inbox has offered to turn notifications on. Never nag twice. */
   hook_hint_at?: string;
+  /** Peers whose watch link has already been offered to the operator — once each. */
+  link_offered?: string[];
 }
 
 /**
@@ -157,6 +159,9 @@ export function readInboxState(): InboxState {
       checked_at: typeof parsed?.checked_at === "number" ? parsed.checked_at : undefined,
       announced_at: typeof parsed?.announced_at === "string" ? parsed.announced_at : undefined,
       hook_hint_at: typeof parsed?.hook_hint_at === "string" ? parsed.hook_hint_at : undefined,
+      link_offered: Array.isArray(parsed?.link_offered)
+        ? parsed.link_offered.filter((p: unknown) => typeof p === "string")
+        : undefined,
     };
   } catch {
     return {};

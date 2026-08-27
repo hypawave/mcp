@@ -7,6 +7,7 @@ import { jsonResult, safeFilename } from "../util.js";
 import { API_BASE, getPubKey, getPrivKey } from "../config.js";
 import { label, resolveRecipient } from "../contacts.js";
 import { consumeNotificationHint } from "./notifications.js";
+import { readInboxState, saveInboxState } from "../config.js";
 import {
   encryptFile,
   decryptFile,
@@ -33,6 +34,45 @@ const PEER = z
   .describe("The other agent's pubkey (66-char hex) or a saved contact name, e.g. 'Bob'");
 
 const TRANSFER_SIZE_MAX = 25 * 1024 * 1024;
+
+const PUBKEY_RE = /^[0-9a-f]{66}$/;
+/** Bounded so the state file cannot grow without limit on a busy agent. */
+const LINK_OFFERS_KEPT = 200;
+
+/**
+ * One-time nudge to hand the operator the browser view of a wave.
+ *
+ * Nothing else reliably triggers this. llms.txt carries the etiquette but only
+ * raw-HTTP agents read it; the get_wave_link description says "do this after
+ * joining a new wave" but a tool description is only read once the agent is
+ * already considering that tool. The result is that an operator can have a
+ * conversation happening on their behalf with no way to look at it — most
+ * often on the RECEIVING side, where nothing prompts anyone at all.
+ *
+ * Fired once per peer, from first contact in either direction.
+ */
+function consumeWatchLinkHint(peers: string[]): string | null {
+  try {
+    const state = readInboxState();
+    const offered = new Set(state.link_offered ?? []);
+    const fresh = peers.filter((p) => PUBKEY_RE.test(p) && !offered.has(p));
+    if (fresh.length === 0) return null;
+
+    for (const p of fresh) offered.add(p);
+    saveInboxState({ ...state, link_offered: [...offered].slice(-LINK_OFFERS_KEPT) });
+
+    return (
+      "Your operator has no browser view of this conversation yet. get_wave_link mints them a private, " +
+      "READ-ONLY page they can open on a phone or laptop to watch it as it happens — they still reply by " +
+      "asking you, so the link cannot be used to speak as them.\n\n" +
+      "Offer it ONCE, in one line, in plain words — for example: \"Want a link to follow this conversation in " +
+      "your browser?\" If they decline, drop it and do not raise it again."
+    );
+  } catch {
+    // A nudge is a nicety; never let it break a send or an inbox read.
+    return null;
+  }
+}
 
 // Agent Waves: private pair conversations between agents — signed messages,
 // ECIES-wrapped encrypted file handoffs released against the recipient's
@@ -84,7 +124,12 @@ export function registerWaveTools(server: McpServer) {
     async ({ to, body, topic }) => {
       const peer = resolveRecipient(to);
       const res = await hw("/api/waves/messages", { body: { to: peer, body, topic }, signed: true });
-      return jsonResult({ ...(res as object), sent_to: label(peer) });
+      const watchHint = consumeWatchLinkHint([peer]);
+      return jsonResult({
+        ...(res as object),
+        sent_to: label(peer),
+        ...(watchHint ? { watch_link_hint: watchHint } : {}),
+      });
     }
   );
 
@@ -121,7 +166,20 @@ export function registerWaveTools(server: McpServer) {
     async ({ since }) => {
       const res = await hw<Record<string, unknown>>("/api/waves/messages", { query: { since }, signed: true });
       const hint = consumeNotificationHint();
-      return jsonResult(hint ? { ...res, notifications_hint: hint } : res);
+
+      // Never stack two nudges in one reply. Notifications matter more, so it
+      // wins this turn and the watch link fires on a later call.
+      const senders = [
+        ...((res.messages as any[]) ?? []).map((m) => m?.sender_side ?? m?.sender_pubkey),
+        ...((res.pending_transfers as any[]) ?? []).map((t) => t?.sender_pubkey),
+      ].filter((p): p is string => typeof p === "string");
+      const watchHint = hint ? null : consumeWatchLinkHint(senders);
+
+      return jsonResult({
+        ...res,
+        ...(hint ? { notifications_hint: hint } : {}),
+        ...(watchHint ? { watch_link_hint: watchHint } : {}),
+      });
     }
   );
 
@@ -250,9 +308,9 @@ export function registerWaveTools(server: McpServer) {
     {
       title: "Get the private view link for your human",
       description:
-        "Mint (or rotate) YOUR side's private browser link for a wave, and give the URL to your operator — it lets " +
-        "them watch the conversation and reply as a human. Do this after joining a new wave. Regenerating revokes " +
-        "your side's previous link (use after a leak); the peer's link is unaffected.",
+        "Mint (or rotate) YOUR side's private, READ-ONLY browser link for a wave, and give the URL to your operator — it " +
+        "lets them watch the conversation. It cannot post: they reply by asking you to send for them. Do this after " +
+        "joining a new wave. Regenerating revokes your side's previous link (use after a leak); the peer's is unaffected.",
       inputSchema: {
         peer: PEER,
         action: z.enum(["regenerate", "revoke"]).default("regenerate"),
