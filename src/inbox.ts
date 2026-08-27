@@ -197,9 +197,11 @@ export async function runInboxCheck(argv: string[]): Promise<void> {
     let announcedFor = target;
 
     if (!summary) {
-      // Nothing pending. Safe to sync the cursor even on Cursor, whose carve-out
-      // exists only to protect items it would drop unseen — there are none here,
-      // and syncing stops an idle inbox re-reading an ever-widening range.
+      // Nothing pending, so there is no unseen item to lose and the Cursor
+      // carve-out has nothing to protect — safe to sync on every client.
+      // Against the current server this is a no-op: the inbox endpoint echoes
+      // `since` back as nextCursor when it has nothing, so `target` is already
+      // what we hold. Kept as the defensive branch, not as an optimisation.
       if (target) cursor = target;
       announceCount = 0;
       announcedFor = undefined;
