@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **Wave notifications are at-least-once instead of at-most-once.** The hook no longer advances the read cursor past pending items: printing to stdout is not proof anyone read it, and a client that swallows hook output silently consumed the only announcement a message ever got. `check_inbox` now advances the cursor, because that call means the agent has the content. Unconfirmed batches are re-announced (bounded by the existing 60s throttle) and abandoned after three tries, so a client that never delivers cannot nag forever — those messages remain readable via `check_inbox`. This generalises the reasoning already applied to Cursor to every client; Cursor still never gives up, since it cannot deliver at all.
-- **An empty inbox syncs the cursor on every client, Cursor included.** Its carve-out exists to protect items that would be dropped unseen, and there are none — holding the cursor only widened the `since` range on every idle check.
+- **An empty inbox syncs the cursor on every client, Cursor included.** Its carve-out exists to protect items that would be dropped unseen, and an empty read has none. No behavioural change against the current server — the inbox endpoint echoes `since` back as `nextCursor` when nothing is waiting, so the sync resolves to the cursor already held. It is the defensive branch, not an optimisation.
 
 ### Fixed
 
