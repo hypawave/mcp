@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { basename, extname, join } from "node:path";
 import { FALLBACK_SPEND_CAP_SATS, getMaxSpendSatsEnv } from "./config.js";
 import { hw } from "./api.js";
 import { bolt11AmountSats } from "./bolt11.js";
@@ -96,11 +97,54 @@ export async function pollUntil<T>(
   }
 }
 
-/** Strip any path components from a server-supplied filename before writing to disk. */
+/** Strip any path components from a server-supplied filename before writing to disk.
+    Leading dots go too, so a peer cannot plant a hidden file (.mcp.json, .bashrc). */
 export function safeFilename(name: string | undefined, fallback: string): string {
-  const base = basename(name || "").replace(/[\x00-\x1f\x7f]/g, "").trim();
-  if (!base || base === "." || base === "..") return fallback;
-  return base;
+  const base = basename(name || "").replace(/[\x00-\x1f\x7f]/g, "").trim().replace(/^\.+/, "");
+  return base || fallback;
+}
+
+/** Write an untrusted file without ever replacing an existing one: a taken
+    name gets " (1)", " (2)", … before the extension, like a browser download.
+    `wx` makes the existence check and the create one atomic step. */
+export function writeUntrustedFile(dir: string, name: string, data: Uint8Array): string {
+  mkdirSync(dir, { recursive: true });
+  const ext = extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  for (let n = 0; n < 1000; n++) {
+    const path = join(dir, n === 0 ? name : `${stem} (${n})${ext}`);
+    try {
+      writeFileSync(path, data, { flag: "wx" });
+      return path;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+  throw new Error(`could not find a free filename for ${name} in ${dir}`);
+}
+
+/** Name the executable format of `data` from its leading bytes, whatever the
+    filename claims — a "report.pdf" that is really a program is the case this
+    exists for. Null for everything else. */
+export function detectExecutable(data: Uint8Array): string | null {
+  const b = data;
+  if (b.length >= 4) {
+    const u32 = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
+    if (u32 === 0x7f454c46) return "ELF executable (Linux)";
+    if ([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe].includes(u32)) return "Mach-O executable (macOS)";
+    if (u32 === 0xcafebabe) return "Mach-O universal binary (macOS) or Java class";
+  }
+  if (b.length >= 2 && b[0] === 0x4d && b[1] === 0x5a) return "Windows executable (PE/MZ)";
+  if (b.length >= 2 && b[0] === 0x23 && b[1] === 0x21) return "script (#! shebang)";
+  return null;
+}
+
+/** Warning to put in a tool result when a received file is executable. */
+export function executableWarning(savedPath: string, kind: string): string {
+  return (
+    `${savedPath} is a ${kind}, whatever its name suggests. Do not open or run it, and tell your ` +
+    "operator before doing anything else with it."
+  );
 }
 
 /** MCP text-content result envelope. */

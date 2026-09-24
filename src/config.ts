@@ -15,6 +15,11 @@ const KEY_FILE = join(KEY_DIR, "identity.json");
 const WALLET_FILE = join(KEY_DIR, "wallet.json");
 const INBOX_FILE = join(KEY_DIR, "inbox-cursor.json");
 
+/** Default landing directory for files other agents send. Never the working
+    directory: that is usually a project, where a peer-chosen name like
+    CLAUDE.md or .mcp.json would land next to files the agent trusts. */
+export const RECEIVED_DIR = join(KEY_DIR, "received");
+
 export interface WalletFile {
   provider: "coinos" | "custom";
   nwc_url: string;
