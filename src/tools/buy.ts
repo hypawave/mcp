@@ -1,11 +1,19 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { hw } from "../api.js";
 import { decryptFile, verifyCommitment } from "../crypto.js";
 import { nwcConfigured, payBolt11 } from "../nwc.js";
-import { assertWithinSpendCap, effectiveAmountSats, jsonResult, pollUntil, safeFilename } from "../util.js";
+import {
+  assertWithinSpendCap,
+  detectExecutable,
+  effectiveAmountSats,
+  executableWarning,
+  jsonResult,
+  pollUntil,
+  safeFilename,
+  writeUntrustedFile,
+} from "../util.js";
 
 interface PayOfferResponse {
   payment_intent_id: string;
@@ -153,7 +161,6 @@ export function registerBuyTools(server: McpServer) {
     },
     async ({ payment_intent_id, claim_token, output_dir }) => {
       const dir = resolve(output_dir);
-      mkdirSync(dir, { recursive: true });
 
       const { files } = await hw<{ files: OfferFileKey[] }>(
         `/api/offers/payment-intent/${payment_intent_id}/file-key`,
@@ -174,9 +181,14 @@ export function registerBuyTools(server: McpServer) {
         const ciphertext = Buffer.from(await res.arrayBuffer());
         verifyCommitment(ciphertext, f.ciphertext_sha256);
         const plaintext = decryptFile(ciphertext, f.wrapped_key, f.iv_hex);
-        const path = join(dir, safeFilename(f.filename, `${f.offer_file_id}.bin`));
-        writeFileSync(path, plaintext);
-        saved.push({ path, bytes: plaintext.length, commitment_verified: Boolean(f.ciphertext_sha256) });
+        const path = writeUntrustedFile(dir, safeFilename(f.filename, `${f.offer_file_id}.bin`), plaintext);
+        const executable = detectExecutable(plaintext);
+        saved.push({
+          path,
+          bytes: plaintext.length,
+          commitment_verified: Boolean(f.ciphertext_sha256),
+          ...(executable && { executable, warning: executableWarning(path, executable) }),
+        });
       }
       return jsonResult({ ok: true, files: saved });
     }

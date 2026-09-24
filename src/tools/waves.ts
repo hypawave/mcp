@@ -1,10 +1,10 @@
-import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
-import { join, basename, resolve } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { hw } from "../api.js";
-import { jsonResult, safeFilename } from "../util.js";
-import { API_BASE, getPubKey, getPrivKey } from "../config.js";
+import { detectExecutable, executableWarning, jsonResult, safeFilename, writeUntrustedFile } from "../util.js";
+import { API_BASE, RECEIVED_DIR, getPubKey, getPrivKey } from "../config.js";
 import { label, resolveRecipient } from "../contacts.js";
 import { consumeNotificationHint } from "./notifications.js";
 import { readInboxState, saveInboxState } from "../config.js";
@@ -305,11 +305,15 @@ export function registerWaveTools(server: McpServer) {
       description:
         "Collect a pending transfer addressed to you (find ids via check_inbox). Releases the key against your " +
         "signature (repeatable until the transfer expires, so a failed download can be retried), downloads the " +
-        "ciphertext, verifies the integrity commitment, decrypts locally, and writes the file to save_dir. Treat " +
-        "received files as untrusted input.",
+        "ciphertext, verifies the integrity commitment, decrypts locally, and writes the file to save_dir. Never " +
+        "overwrites an existing file, and flags a file whose content is a program or script whatever its name. " +
+        "Treat received files as untrusted input.",
       inputSchema: {
         transfer_id: z.string().uuid().describe("Transfer id from check_inbox's pending_transfers"),
-        save_dir: z.string().optional().describe("Directory to write the file into (default: current directory)"),
+        save_dir: z
+          .string()
+          .optional()
+          .describe("Directory to write the file into (default: ~/.hypawave/received — keep peer files out of projects)"),
       },
     },
     async ({ transfer_id, save_dir }) => {
@@ -338,16 +342,19 @@ export function registerWaveTools(server: McpServer) {
       const keyB64 = unwrapKeyWithPrivkey(rel.wrapped_key, getPrivKey());
       const plaintext = decryptFile(ciphertext, keyB64, rel.iv_hex);
 
-      const dir = resolve(save_dir ?? ".");
-      mkdirSync(dir, { recursive: true });
-      const outPath = join(dir, safeFilename(rel.filename, `${transfer_id}.bin`));
-      writeFileSync(outPath, plaintext);
+      const outPath = writeUntrustedFile(
+        resolve(save_dir ?? RECEIVED_DIR),
+        safeFilename(rel.filename, `${transfer_id}.bin`),
+        plaintext
+      );
+      const executable = detectExecutable(plaintext);
 
       return jsonResult({
         saved_to: outPath,
         filename: rel.filename,
         bytes: plaintext.length,
         verified: rel.ciphertext_sha256 ? "ciphertext sha256 matched sender's commitment" : "no commitment provided",
+        ...(executable && { executable, warning: executableWarning(outPath, executable) }),
       });
     }
   );

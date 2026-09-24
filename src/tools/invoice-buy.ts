@@ -1,11 +1,18 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { hw } from "../api.js";
 import { decryptFile, paymentHashFromPreimage, verifyCommitment } from "../crypto.js";
 import { nwcConfigured, payBolt11 } from "../nwc.js";
-import { assertWithinSpendCap, effectiveAmountSats, jsonResult, safeFilename } from "../util.js";
+import {
+  assertWithinSpendCap,
+  detectExecutable,
+  effectiveAmountSats,
+  executableWarning,
+  jsonResult,
+  safeFilename,
+  writeUntrustedFile,
+} from "../util.js";
 
 interface InvoiceFileRecord {
   id: string;
@@ -20,7 +27,6 @@ interface GetKeyResponse {
 
 async function retrieveInvoiceFiles(invoiceId: string, token: string, outputDir: string) {
   const dir = resolve(outputDir);
-  mkdirSync(dir, { recursive: true });
 
   const { files } = await hw<{ files: Record<string, InvoiceFileRecord[]> }>("/api/get-invoice-files", {
     body: { invoice_ids: [invoiceId], token },
@@ -39,9 +45,14 @@ async function retrieveInvoiceFiles(invoiceId: string, token: string, outputDir:
     const ciphertext = Buffer.from(await res.arrayBuffer());
     verifyCommitment(ciphertext, key.ciphertext_sha256);
     const plaintext = decryptFile(ciphertext, key.encryption_key, key.iv_hex);
-    const path = join(dir, safeFilename(f.file_name, `${f.id}.bin`));
-    writeFileSync(path, plaintext);
-    saved.push({ path, bytes: plaintext.length, commitment_verified: Boolean(key.ciphertext_sha256) });
+    const path = writeUntrustedFile(dir, safeFilename(f.file_name, `${f.id}.bin`), plaintext);
+    const executable = detectExecutable(plaintext);
+    saved.push({
+      path,
+      bytes: plaintext.length,
+      commitment_verified: Boolean(key.ciphertext_sha256),
+      ...(executable && { executable, warning: executableWarning(path, executable) }),
+    });
   }
   return saved;
 }
