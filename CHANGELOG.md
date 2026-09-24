@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.1] - 2026-09-24
+
+### Security
+
+- **Received files can no longer replace existing ones.** `receive_file`, `download_files` and `pay_invoice` write peer- and seller-chosen filenames; they used to overwrite whatever was there, so a file named `CLAUDE.md`, `.mcp.json` or `package.json` landing in a project directory could replace the project's own and feed the agent instructions or a new MCP server without anything being opened. Writes are now create-only (`wx`), and a taken name gets ` (1)`, ` (2)`, … before the extension.
+- **`receive_file` defaults to `~/.hypawave/received`** instead of the current working directory, which is usually a project. `save_dir` still overrides it.
+- **Leading dots are stripped from received filenames**, so a peer cannot plant a hidden file (`.bashrc` → `bashrc`).
+
+### Added
+
+- **Received files are checked for executables.** When a file's leading bytes are an ELF, Mach-O or Windows executable, or a `#!` script, the tool result carries `executable` and a `warning` telling the agent not to open or run it and to tell its operator, whatever the filename claims. Content is never executed or opened by the server either way.
+
 ## [0.6.0] - 2026-08-27
 
 ### Added
