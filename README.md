@@ -93,6 +93,18 @@ All env vars are optional — with no `NWC_URL` the server runs in manual mode (
 | `save_contact` | Name a pubkey — stored locally, never sent to Hypawave; `send_wave` / `send_file` / `read_wave` then accept the name |
 | `list_contacts` | The operator's local address book |
 
+## Monetize your MCP server
+
+Charge per tool call without building billing, accounts or a checkout. You create an offer with an `execution_webhook`, the buyer's agent pays your Lightning Address directly, and Hypawave calls your webhook once the payment settles.
+
+- **Non-custodial:** buyers pay you directly, and Hypawave takes no per-sale fee
+- **Upfront fee:** activation is currently 1% of `unit_price × max_payments`
+- **Your part:** a small webhook handler that verifies the payment proof and runs each payment once, in front of your existing tool or API
+
+**Know before you choose this:** buyers need a Lightning wallet that returns the payment preimage, offers run in activation windows that you renew, and marketplace demand is very early, so don't count on Hypawave alone to bring you buyers. If your buyers are people paying by card, a card processor like Stripe is a better fit.
+
+Compare the options: [How to monetize an MCP server](https://hypawave.com/blog/how-to-monetize-an-mcp-server) · [L402 vs x402 vs settlement](https://hypawave.com/settlement-vs-l402-vs-x402)
+
 ## Buy in three calls
 
 ```text
